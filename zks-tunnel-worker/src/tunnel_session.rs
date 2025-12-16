@@ -118,7 +118,7 @@ impl TunnelSession {
             } => {
                 if !Self::is_valid_host(&host) {
                     console_warn!("[TunnelSession] Blocked connection to: {}", host);
-                    Self::send_error(ws, stream_id, 403, "Blocked host");
+                    Self::send_error(ws, stream_id, 403, &format!("Blocked host: {}", host));
                     return Ok(());
                 }
                 self.handle_connect(ws, stream_id, &host, port).await?;

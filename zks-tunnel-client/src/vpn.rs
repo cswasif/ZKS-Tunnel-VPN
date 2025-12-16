@@ -21,6 +21,7 @@
 mod implementation {
     use futures::{SinkExt, StreamExt};
     use std::net::Ipv4Addr;
+    use std::process::Command;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt}; // Still needed for tunnel stream
@@ -487,6 +488,13 @@ mod implementation {
                     .status()?;
 
                 info!("Windows kill switch enabled (default outbound blocked, app allowed)");
+
+                // Add default route to VPN interface
+                // route add 0.0.0.0 mask 0.0.0.0 10.0.85.1 metric 1
+                info!("Adding default route...");
+                let _ = Command::new("route")
+                    .args(["add", "0.0.0.0", "mask", "0.0.0.0", "10.0.85.1", "metric", "1"])
+                    .status();
             }
 
             #[cfg(unix)]
