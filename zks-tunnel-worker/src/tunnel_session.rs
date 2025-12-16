@@ -197,6 +197,13 @@ impl TunnelSession {
             return Ok(());
         }
 
+        // Cloudflare blocks connect() to ports 80 and 443 on standard plans.
+        // For Port 80 (HTTP), we can use fetch() as a fallback proxy.
+        if port == 80 {
+            console_log!("[TunnelSession] Port 80 detected - using Fetch Fallback for {}", host);
+            return self.handle_http_fetch(ws, stream_id, host).await;
+        }
+
         let address = format!("{}:{}", host, port);
         console_log!("[TunnelSession] Connecting to {}", address);
 
@@ -242,6 +249,138 @@ impl TunnelSession {
                 Self::send_error(ws, stream_id, 502, &format!("Connection failed: {:?}", e));
             }
         }
+
+        Ok(())
+    }
+
+    /// Handle HTTP requests via fetch() instead of raw TCP connect()
+    /// This is a "Blind Proxy" - it opens a stream, reads the HTTP request from the client,
+    /// parses it (roughly), sends a fetch(), and streams the response back.
+    async fn handle_http_fetch(
+        &self,
+        ws: &WebSocket,
+        stream_id: StreamId,
+        host: &str,
+    ) -> Result<()> {
+        // 1. Send ConnectSuccess immediately (we pretend we connected)
+        let success_msg = TunnelMessage::ConnectSuccess { stream_id };
+        ws.send_with_bytes(&success_msg.encode())?;
+
+        // 2. Create channel to receive data from client (the HTTP request)
+        let (write_tx, mut write_rx) = mpsc::channel::<Bytes>(64);
+        self.active_streams
+            .borrow_mut()
+            .insert(stream_id, StreamInfo { write_tx });
+
+        let ws_clone = ws.clone();
+        let host_owned = host.to_string();
+        let active_streams = self.active_streams.clone();
+
+        spawn_local(async move {
+            // Buffer to accumulate the initial request headers
+            let mut buffer = Vec::new();
+            let mut request_sent = false;
+
+            // We need to read from write_rx (data from client)
+            while let Some(chunk) = write_rx.next().await {
+                if request_sent {
+                    // If we already sent the request, we can't easily pipe more data 
+                    // into the fetch body unless we used a TransformStream (complex).
+                    // For simple HTTP GET, this is usually fine. POST might be tricky.
+                    // For now, ignore extra data or TODO: implement streaming upload.
+                    continue;
+                }
+
+                buffer.extend_from_slice(&chunk);
+
+                // Check if we have a full HTTP header (double newline)
+                // or just try to send what we have if it looks like a request
+                // Simple heuristic: assume the first chunk(s) contain the method and path.
+                
+                // Parse method and path from buffer
+                let req_str = String::from_utf8_lossy(&buffer);
+                let lines: Vec<&str> = req_str.lines().collect();
+                if lines.is_empty() { continue; }
+
+                let first_line = lines[0];
+                let parts: Vec<&str> = first_line.split_whitespace().collect();
+                if parts.len() < 2 { continue; }
+
+                let method = parts[0]; // GET, POST, etc.
+                let path = parts[1];   // /, /foo, etc.
+
+                // Construct full URL
+                let url = format!("http://{}{}", host_owned, path);
+                console_log!("[TunnelSession] Fetching URL: {}", url);
+
+                // Prepare Fetch
+                let mut init = RequestInit::new();
+                init.method = match method {
+                    "GET" => Method::Get,
+                    "POST" => Method::Post,
+                    "HEAD" => Method::Head,
+                    "PUT" => Method::Put,
+                    "DELETE" => Method::Delete,
+                    _ => Method::Get,
+                };
+                
+                // TODO: Copy headers from client request
+                // For now, basic fetch
+                
+                match Fetch::Url(url.parse().unwrap()).send().await {
+                    Ok(mut response) => {
+                        request_sent = true;
+                        
+                        // Reconstruct HTTP Response Status Line
+                        let status_line = format!("HTTP/1.1 {} {}\r\n", response.status_code(), response.status_text());
+                        let mut head = status_line.into_bytes();
+
+                        // Reconstruct Headers
+                        if let Ok(headers) = response.headers() {
+                            for pair in headers.entries() {
+                                if let Ok(p) = pair {
+                                    if p.0.to_lowercase() != "transfer-encoding" { // Chunked handled by us
+                                         head.extend_from_slice(format!("{}: {}\r\n", p.0, p.1).as_bytes());
+                                    }
+                                }
+                            }
+                        }
+                        head.extend_from_slice(b"\r\n"); // End of headers
+
+                        // Send Headers
+                        let msg = TunnelMessage::Data {
+                            stream_id,
+                            payload: Bytes::from(head),
+                        };
+                        let _ = ws_clone.send_with_bytes(&msg.encode());
+
+                        // Stream Body
+                        if let Ok(Some(mut body)) = response.body() {
+                             while let Ok(Some(chunk)) = body.read().await {
+                                 let msg = TunnelMessage::Data {
+                                     stream_id,
+                                     payload: Bytes::from(chunk),
+                                 };
+                                 let _ = ws_clone.send_with_bytes(&msg.encode());
+                             }
+                        }
+                        
+                        // Close stream
+                        let close_msg = TunnelMessage::Close { stream_id };
+                        let _ = ws_clone.send_with_bytes(&close_msg.encode());
+                        active_streams.borrow_mut().remove(&stream_id);
+                        break;
+                    }
+                    Err(e) => {
+                        console_error!("[TunnelSession] Fetch failed: {:?}", e);
+                        let close_msg = TunnelMessage::Close { stream_id };
+                        let _ = ws_clone.send_with_bytes(&close_msg.encode());
+                        active_streams.borrow_mut().remove(&stream_id);
+                        break;
+                    }
+                }
+            }
+        });
 
         Ok(())
     }
