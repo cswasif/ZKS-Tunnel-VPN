@@ -3,11 +3,11 @@
 //! Implements RFC 1928 (SOCKS5) for proxying TCP connections.
 //! Only supports CONNECT command (not BIND or UDP ASSOCIATE).
 
-use tokio::net::{TcpListener, TcpStream};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use std::sync::Arc;
-use tracing::{info, error, debug};
 use crate::tunnel::TunnelClient;
+use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tracing::{debug, error, info};
 
 /// SOCKS5 versions
 const SOCKS_VERSION: u8 = 0x05;
@@ -42,7 +42,10 @@ impl Socks5Server {
         }
     }
 
-    pub async fn run(&self, listener: TcpListener) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn run(
+        &self,
+        listener: TcpListener,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         loop {
             let (stream, addr) = listener.accept().await?;
             debug!("New SOCKS5 connection from {}", addr);

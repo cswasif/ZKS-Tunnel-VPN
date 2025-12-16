@@ -17,17 +17,17 @@ use clap::{Parser, ValueEnum};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tracing::{info, error, warn, Level};
+use tracing::{error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
 mod socks5;
-mod tunnel;
 mod stream_manager;
+mod tunnel;
 mod vpn;
 
-use tunnel::TunnelClient;
 use socks5::Socks5Server;
-use vpn::{VpnController, VpnConfig};
+use tunnel::TunnelClient;
+use vpn::{VpnConfig, VpnController};
 
 /// Operating mode for the VPN client
 #[derive(Debug, Clone, Copy, ValueEnum, Default, PartialEq)]
@@ -90,10 +90,12 @@ async fn main() -> Result<(), BoxError> {
     let args = Args::parse();
 
     // Initialize logging
-    let level = if args.verbose { Level::DEBUG } else { Level::INFO };
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(level)
-        .finish();
+    let level = if args.verbose {
+        Level::DEBUG
+    } else {
+        Level::INFO
+    };
+    let subscriber = FmtSubscriber::builder().with_max_level(level).finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
     // Display banner
@@ -119,19 +121,28 @@ fn print_banner(args: &Args) {
     info!("║         ZKS-Tunnel VPN - Serverless & Free                   ║");
     info!("╠══════════════════════════════════════════════════════════════╣");
     info!("║  Worker: {}  ", args.worker);
-    
+
     match args.mode {
         Mode::Socks5 => {
             info!("║  Mode:   SOCKS5 Proxy (browser only)                        ║");
-            info!("║  Listen: {}:{}                                  ", args.bind, args.port);
+            info!(
+                "║  Listen: {}:{}                                  ",
+                args.bind, args.port
+            );
         }
         Mode::Vpn => {
             info!("║  Mode:   System-Wide VPN (all traffic)                      ║");
-            info!("║  TUN:    {}                                             ", args.tun_name);
-            info!("║  VPN IP: {}                                          ", args.vpn_address);
+            info!(
+                "║  TUN:    {}                                             ",
+                args.tun_name
+            );
+            info!(
+                "║  VPN IP: {}                                          ",
+                args.vpn_address
+            );
         }
     }
-    
+
     info!("╚══════════════════════════════════════════════════════════════╝");
 }
 
@@ -139,9 +150,12 @@ fn print_banner(args: &Args) {
 async fn run_socks5_mode(args: Args, tunnel: TunnelClient) -> Result<(), BoxError> {
     let bind_addr: SocketAddr = format!("{}:{}", args.bind, args.port).parse()?;
     let listener = TcpListener::bind(bind_addr).await?;
-    
+
     info!("🚀 SOCKS5 proxy listening on {}", bind_addr);
-    info!("   Configure your browser to use SOCKS5 proxy: {}:{}", args.bind, args.port);
+    info!(
+        "   Configure your browser to use SOCKS5 proxy: {}:{}",
+        args.bind, args.port
+    );
     info!("");
     info!("   Firefox: Settings → Network → Manual proxy → SOCKS5");
     info!("   Chrome:  Use SwitchyOmega extension");
@@ -161,14 +175,14 @@ async fn run_vpn_mode(args: Args, tunnel: TunnelClient) -> Result<(), BoxError> 
         error!("   Rebuild with: cargo build --release --features vpn");
         return Err("VPN feature not enabled".into());
     }
-    
+
     #[cfg(feature = "vpn")]
     {
         // Check for admin/root privileges
         check_privileges()?;
-        
+
         let vpn_addr: std::net::Ipv4Addr = args.vpn_address.parse()?;
-        
+
         let config = VpnConfig {
             device_name: args.tun_name.clone(),
             address: vpn_addr,
@@ -177,36 +191,36 @@ async fn run_vpn_mode(args: Args, tunnel: TunnelClient) -> Result<(), BoxError> 
             dns_protection: args.dns_protection,
             kill_switch: args.kill_switch,
         };
-        
+
         info!("🔒 Starting system-wide VPN...");
         info!("   All traffic will be routed through the tunnel.");
-        
+
         if args.kill_switch {
             info!("   Kill switch: ENABLED (traffic blocked if VPN drops)");
         }
-        
+
         if args.dns_protection {
             info!("   DNS protection: ENABLED (queries via DoH)");
         }
-        
+
         let tunnel = Arc::new(tunnel);
         let vpn = VpnController::new(tunnel, config);
-        
+
         vpn.start().await?;
-        
+
         // Wait for Ctrl+C
         info!("");
         info!("Press Ctrl+C to disconnect VPN...");
-        
+
         tokio::signal::ctrl_c().await?;
-        
+
         info!("");
         info!("Shutting down VPN...");
         vpn.stop().await?;
-        
+
         Ok(())
     }
-    
+
     #[cfg(not(feature = "vpn"))]
     Ok(())
 }
@@ -221,7 +235,7 @@ fn check_privileges() -> Result<(), BoxError> {
         warn!("⚠️  VPN mode requires Administrator privileges on Windows");
         warn!("   Right-click zks-vpn.exe → Run as administrator");
     }
-    
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -231,6 +245,6 @@ fn check_privileges() -> Result<(), BoxError> {
             return Err("Root privileges required for VPN mode".into());
         }
     }
-    
+
     Ok(())
 }

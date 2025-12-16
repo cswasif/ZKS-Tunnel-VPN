@@ -6,13 +6,13 @@
 //! - Memory-efficient buffer management
 //! - Hibernation support for zero-cost idle connections
 
-use worker::*;
-use worker::wasm_bindgen::JsCast;
-use zks_tunnel_proto::{TunnelMessage, StreamId};
-use std::collections::HashMap;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use wasm_bindgen_futures::spawn_local;
+use worker::wasm_bindgen::JsCast;
+use worker::*;
+use zks_tunnel_proto::{StreamId, TunnelMessage};
 
 /// Stream information including write half of socket
 struct StreamInfo {
@@ -57,7 +57,10 @@ impl DurableObject for TunnelSession {
         self.state.accept_web_socket(&server);
 
         *self.connection_count.borrow_mut() += 1;
-        console_log!("[TunnelSession] Connection #{} established", self.connection_count.borrow());
+        console_log!(
+            "[TunnelSession] Connection #{} established",
+            self.connection_count.borrow()
+        );
 
         Response::from_websocket(client)
     }
@@ -73,7 +76,10 @@ impl DurableObject for TunnelSession {
             }
             WebSocketIncomingMessage::String(text) => {
                 // Handle text messages (could be JSON commands in future)
-                console_log!("[TunnelSession] Text message received: {} bytes", text.len());
+                console_log!(
+                    "[TunnelSession] Text message received: {} bytes",
+                    text.len()
+                );
             }
         }
         Ok(())
@@ -88,13 +94,15 @@ impl DurableObject for TunnelSession {
     ) -> Result<()> {
         console_log!(
             "[TunnelSession] Connection closed: code={}, reason={}, clean={}",
-            code, reason, was_clean
+            code,
+            reason,
+            was_clean
         );
-        
+
         // Clean up all streams
         let stream_count = self.active_streams.borrow().len();
         self.active_streams.borrow_mut().clear();
-        
+
         console_log!("[TunnelSession] Cleaned up {} streams", stream_count);
         Ok(())
     }
@@ -117,15 +125,24 @@ impl TunnelSession {
         };
 
         match msg {
-            TunnelMessage::Connect { stream_id, host, port } => {
+            TunnelMessage::Connect {
+                stream_id,
+                host,
+                port,
+            } => {
                 // Validate host to prevent SSRF
                 if !Self::is_valid_host(&host) {
                     console_warn!("[TunnelSession] Rejected invalid host: {}", host);
                     Self::send_error(ws, stream_id, 400, "Invalid host");
                     return Ok(());
                 }
-                
-                console_log!("[TunnelSession] CONNECT stream={} to {}:{}", stream_id, host, port);
+
+                console_log!(
+                    "[TunnelSession] CONNECT stream={} to {}:{}",
+                    stream_id,
+                    host,
+                    port
+                );
                 self.handle_connect(ws, stream_id, &host, port).await?;
             }
             TunnelMessage::Data { stream_id, payload } => {
@@ -147,16 +164,30 @@ impl TunnelSession {
                 console_warn!("[TunnelSession] Received unexpected ErrorReply from client");
             }
             TunnelMessage::DnsQuery { request_id, query } => {
-                console_log!("[TunnelSession] DNS query request_id={} len={}", request_id, query.len());
+                console_log!(
+                    "[TunnelSession] DNS query request_id={} len={}",
+                    request_id,
+                    query.len()
+                );
                 self.handle_dns_query(ws, request_id, &query).await?;
             }
             TunnelMessage::DnsResponse { .. } => {
                 // Unexpected - worker sends responses, not client
                 console_warn!("[TunnelSession] Received unexpected DnsResponse from client");
             }
-            TunnelMessage::UdpDatagram { request_id, host, port, payload } => {
-                console_log!("[TunnelSession] UDP datagram request_id={} to {}:{} len={}", 
-                    request_id, host, port, payload.len());
+            TunnelMessage::UdpDatagram {
+                request_id,
+                host,
+                port,
+                payload,
+            } => {
+                console_log!(
+                    "[TunnelSession] UDP datagram request_id={} to {}:{} len={}",
+                    request_id,
+                    host,
+                    port,
+                    payload.len()
+                );
                 // Note: Workers don't have raw UDP socket support
                 // For DNS (port 53), we redirect to DoH
                 if port == 53 {
@@ -179,25 +210,48 @@ impl TunnelSession {
     /// Validate hostname to prevent SSRF attacks
     fn is_valid_host(host: &str) -> bool {
         // Block internal/private networks
-        let blocked_prefixes = ["127.", "10.", "192.168.", "172.16.", "172.17.", 
-                                "172.18.", "172.19.", "172.20.", "172.21.", "172.22.",
-                                "172.23.", "172.24.", "172.25.", "172.26.", "172.27.",
-                                "172.28.", "172.29.", "172.30.", "172.31.", "169.254.",
-                                "0.", "localhost", "::1", "fc", "fd", "fe80"];
-        
+        let blocked_prefixes = [
+            "127.",
+            "10.",
+            "192.168.",
+            "172.16.",
+            "172.17.",
+            "172.18.",
+            "172.19.",
+            "172.20.",
+            "172.21.",
+            "172.22.",
+            "172.23.",
+            "172.24.",
+            "172.25.",
+            "172.26.",
+            "172.27.",
+            "172.28.",
+            "172.29.",
+            "172.30.",
+            "172.31.",
+            "169.254.",
+            "0.",
+            "localhost",
+            "::1",
+            "fc",
+            "fd",
+            "fe80",
+        ];
+
         let host_lower = host.to_lowercase();
-        
+
         for prefix in blocked_prefixes {
             if host_lower.starts_with(prefix) {
                 return false;
             }
         }
-        
+
         // Block empty or too long hosts
         if host.is_empty() || host.len() > 253 {
             return false;
         }
-        
+
         true
     }
 
@@ -233,29 +287,32 @@ impl TunnelSession {
         match Socket::builder().connect(host, port) {
             Ok(socket) => {
                 console_log!("[TunnelSession] Connected to {}", address);
-                
+
                 // Split socket into read and write halves
                 let (mut read_half, write_half) = tokio::io::split(socket);
-                
+
                 // Spawn a task to read from socket using tokio AsyncReadExt
                 let ws_for_reader = ws.clone();
                 let active_streams_for_reader = self.active_streams.clone();
-                
+
                 spawn_local(async move {
                     use tokio::io::AsyncReadExt;
                     let mut buffer = vec![0u8; 16384];
-                    
+
                     loop {
                         // Read from socket (Server -> Client)
                         match read_half.read(&mut buffer).await {
                             Ok(0) => {
                                 // Socket closed by remote
-                                console_log!("[TunnelSession] Socket {} closed by remote", stream_id);
-                                
+                                console_log!(
+                                    "[TunnelSession] Socket {} closed by remote",
+                                    stream_id
+                                );
+
                                 // Notify client
                                 let close_msg = TunnelMessage::Close { stream_id };
                                 let _ = ws_for_reader.send_with_bytes(&close_msg.encode());
-                                
+
                                 // Clean up
                                 active_streams_for_reader.borrow_mut().remove(&stream_id);
                                 break;
@@ -267,27 +324,45 @@ impl TunnelSession {
                                     payload: bytes::Bytes::copy_from_slice(&buffer[..n]),
                                 };
                                 if ws_for_reader.send_with_bytes(&msg.encode()).is_err() {
-                                    console_error!("[TunnelSession] Failed to send data for stream {}", stream_id);
+                                    console_error!(
+                                        "[TunnelSession] Failed to send data for stream {}",
+                                        stream_id
+                                    );
                                     break;
                                 }
                             }
                             Err(e) => {
-                                console_error!("[TunnelSession] Socket read error on stream {}: {:?}", stream_id, e);
-                                Self::send_error(&ws_for_reader, stream_id, 500, "Socket read error");
+                                console_error!(
+                                    "[TunnelSession] Socket read error on stream {}: {:?}",
+                                    stream_id,
+                                    e
+                                );
+                                Self::send_error(
+                                    &ws_for_reader,
+                                    stream_id,
+                                    500,
+                                    "Socket read error",
+                                );
                                 active_streams_for_reader.borrow_mut().remove(&stream_id);
                                 break;
                             }
                         }
                     }
-                    console_log!("[TunnelSession] Reader task exiting for stream {}", stream_id);
+                    console_log!(
+                        "[TunnelSession] Reader task exiting for stream {}",
+                        stream_id
+                    );
                 });
-                
+
                 // Store write half for Client -> Server direction (handled in handle_data)
-                self.active_streams.borrow_mut().insert(stream_id, StreamInfo {
-                    socket: write_half,
-                });
-                
-                console_log!("[TunnelSession] Stream {} ready for bidirectional data transfer", stream_id);
+                self.active_streams
+                    .borrow_mut()
+                    .insert(stream_id, StreamInfo { socket: write_half });
+
+                console_log!(
+                    "[TunnelSession] Stream {} ready for bidirectional data transfer",
+                    stream_id
+                );
             }
             Err(e) => {
                 console_error!("[TunnelSession] Connect failed to {}: {:?}", address, e);
@@ -301,18 +376,26 @@ impl TunnelSession {
     /// Handle DATA command - forward data to TCP socket (Client -> Server)
     async fn handle_data(&self, ws: &WebSocket, stream_id: StreamId, payload: &[u8]) -> Result<()> {
         use tokio::io::AsyncWriteExt;
-        
+
         // Get mutable access to streams
         let mut streams = self.active_streams.borrow_mut();
-        
+
         if let Some(stream_info) = streams.get_mut(&stream_id) {
             // Write data to socket
             match stream_info.socket.write_all(payload).await {
                 Ok(()) => {
-                    console_log!("[TunnelSession] Wrote {} bytes to stream {}", payload.len(), stream_id);
+                    console_log!(
+                        "[TunnelSession] Wrote {} bytes to stream {}",
+                        payload.len(),
+                        stream_id
+                    );
                 }
                 Err(e) => {
-                    console_error!("[TunnelSession] Socket write error on stream {}: {:?}", stream_id, e);
+                    console_error!(
+                        "[TunnelSession] Socket write error on stream {}: {:?}",
+                        stream_id,
+                        e
+                    );
                     streams.remove(&stream_id);
                     Self::send_error(ws, stream_id, 500, &format!("Write error: {:?}", e));
                 }
@@ -321,7 +404,7 @@ impl TunnelSession {
             console_warn!("[TunnelSession] DATA for unknown stream {}", stream_id);
             Self::send_error(ws, stream_id, 404, "Stream not found");
         }
-        
+
         Ok(())
     }
 
@@ -329,10 +412,10 @@ impl TunnelSession {
     async fn handle_close(&self, stream_id: StreamId) -> Result<()> {
         if let Some(info) = self.active_streams.borrow_mut().remove(&stream_id) {
             console_log!("[TunnelSession] CLOSE stream={}", stream_id);
-            
+
             // Socket will be dropped automatically, closing the connection
             drop(info);
-            
+
             console_log!("[TunnelSession] Stream {} closed gracefully", stream_id);
         } else {
             console_log!("[TunnelSession] CLOSE stream={} (not found)", stream_id);
@@ -345,7 +428,7 @@ impl TunnelSession {
     async fn handle_dns_query(&self, ws: &WebSocket, request_id: u32, query: &[u8]) -> Result<()> {
         // Use resolve_dns_via_doh which uses web_sys fetch directly
         let response = self.resolve_dns_via_doh(query).await;
-        
+
         match response {
             Ok(dns_response) => {
                 let msg = TunnelMessage::DnsResponse {
@@ -353,7 +436,10 @@ impl TunnelSession {
                     response: bytes::Bytes::from(dns_response),
                 };
                 let _ = ws.send_with_bytes(&msg.encode());
-                console_log!("[TunnelSession] DNS response sent for request_id={}", request_id);
+                console_log!(
+                    "[TunnelSession] DNS response sent for request_id={}",
+                    request_id
+                );
             }
             Err(e) => {
                 console_error!("[TunnelSession] DoH resolution failed: {:?}", e);
@@ -366,74 +452,91 @@ impl TunnelSession {
                 let _ = ws.send_with_bytes(&error_msg.encode());
             }
         }
-        
+
         Ok(())
     }
 
     /// Resolve DNS query via DoH using native fetch
     async fn resolve_dns_via_doh(&self, query: &[u8]) -> Result<Vec<u8>> {
-        use worker::wasm_bindgen::JsValue;
         use worker::js_sys::{ArrayBuffer, Uint8Array};
-        
+        use worker::wasm_bindgen::JsValue;
+
         // Cloudflare DoH endpoint
         let url = "https://1.1.1.1/dns-query";
-        
+
         // Create the request using web_sys
         let opts = web_sys::RequestInit::new();
         opts.set_method("POST");
-        
+
         // Set body as ArrayBuffer
         let body_array = Uint8Array::new_with_length(query.len() as u32);
         body_array.copy_from(query);
         opts.set_body(&body_array.buffer());
-        
+
         // Create headers
-        let headers = web_sys::Headers::new().map_err(|_| Error::from("Headers creation failed"))?;
-        headers.set("Content-Type", "application/dns-message").map_err(|_| Error::from("Set header failed"))?;
-        headers.set("Accept", "application/dns-message").map_err(|_| Error::from("Set header failed"))?;
+        let headers =
+            web_sys::Headers::new().map_err(|_| Error::from("Headers creation failed"))?;
+        headers
+            .set("Content-Type", "application/dns-message")
+            .map_err(|_| Error::from("Set header failed"))?;
+        headers
+            .set("Accept", "application/dns-message")
+            .map_err(|_| Error::from("Set header failed"))?;
         opts.set_headers(&headers);
-        
+
         // Create request
         let request = web_sys::Request::new_with_str_and_init(url, &opts)
             .map_err(|_| Error::from("Request creation failed"))?;
-        
+
         // Use worker's Fetch
         let global = worker::js_sys::global();
         let fetch_fn = worker::js_sys::Reflect::get(&global, &JsValue::from_str("fetch"))
             .map_err(|_| Error::from("fetch not found"))?;
-        
+
         // Call fetch
-        let fetch_fn = fetch_fn.dyn_into::<worker::js_sys::Function>()
+        let fetch_fn = fetch_fn
+            .dyn_into::<worker::js_sys::Function>()
             .map_err(|_| Error::from("fetch is not a function"))?;
-        
-        let promise = fetch_fn.call1(&JsValue::NULL, &request)
+
+        let promise = fetch_fn
+            .call1(&JsValue::NULL, &request)
             .map_err(|_| Error::from("fetch call failed"))?;
-        
+
         let promise = worker::js_sys::Promise::from(promise);
         let future = wasm_bindgen_futures::JsFuture::from(promise);
-        
-        let response = future.await.map_err(|e| Error::from(format!("fetch failed: {:?}", e)))?;
-        let response: web_sys::Response = response.dyn_into()
+
+        let response = future
+            .await
+            .map_err(|e| Error::from(format!("fetch failed: {:?}", e)))?;
+        let response: web_sys::Response = response
+            .dyn_into()
             .map_err(|_| Error::from("response cast failed"))?;
-        
+
         if !response.ok() {
-            return Err(Error::from(format!("DoH returned status {}", response.status())));
+            return Err(Error::from(format!(
+                "DoH returned status {}",
+                response.status()
+            )));
         }
-        
+
         // Get response body as ArrayBuffer
-        let body_promise = response.array_buffer()
+        let body_promise = response
+            .array_buffer()
             .map_err(|_| Error::from("array_buffer() failed"))?;
-        
+
         let body_future = wasm_bindgen_futures::JsFuture::from(body_promise);
-        let body = body_future.await.map_err(|_| Error::from("body await failed"))?;
-        
-        let array_buffer: ArrayBuffer = body.dyn_into()
+        let body = body_future
+            .await
+            .map_err(|_| Error::from("body await failed"))?;
+
+        let array_buffer: ArrayBuffer = body
+            .dyn_into()
             .map_err(|_| Error::from("body cast failed"))?;
-        
+
         let uint8_array = Uint8Array::new(&array_buffer);
         let mut vec = vec![0u8; uint8_array.length() as usize];
         uint8_array.copy_to(&mut vec);
-        
+
         Ok(vec)
     }
 }

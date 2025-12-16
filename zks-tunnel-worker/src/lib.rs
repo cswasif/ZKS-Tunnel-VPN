@@ -28,12 +28,15 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 
     // Health check
     if path == "/health" || path == "/" {
-        return Response::ok(serde_json::json!({
-            "status": "ok",
-            "service": "zks-tunnel",
-            "version": "0.1.0",
-            "capabilities": ["tcp", "websocket", "zks"]
-        }).to_string());
+        return Response::ok(
+            serde_json::json!({
+                "status": "ok",
+                "service": "zks-tunnel",
+                "version": "0.1.0",
+                "capabilities": ["tcp", "websocket", "zks"]
+            })
+            .to_string(),
+        );
     }
 
     Response::error("Not Found. Use /tunnel for VPN connection.", 404)
@@ -43,7 +46,7 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 async fn handle_tunnel(req: Request, env: Env) -> Result<Response> {
     // Get or create Durable Object for this session
     let namespace = env.durable_object("TUNNEL_SESSION")?;
-    
+
     // Generate unique session ID
     let session_id = generate_session_id();
     let id = namespace.id_from_name(&session_id)?;

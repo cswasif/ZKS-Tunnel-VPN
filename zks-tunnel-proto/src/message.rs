@@ -68,14 +68,9 @@ pub enum TunnelMessage {
         port: u16,
     },
     /// Data payload for a stream (TCP)
-    Data {
-        stream_id: StreamId,
-        payload: Bytes,
-    },
+    Data { stream_id: StreamId, payload: Bytes },
     /// Close a stream
-    Close {
-        stream_id: StreamId,
-    },
+    Close { stream_id: StreamId },
     /// Error on a stream
     ErrorReply {
         stream_id: StreamId,
@@ -131,7 +126,11 @@ impl TunnelMessage {
         let mut buf = BytesMut::with_capacity(256);
 
         match self {
-            TunnelMessage::Connect { stream_id, host, port } => {
+            TunnelMessage::Connect {
+                stream_id,
+                host,
+                port,
+            } => {
                 buf.put_u8(CommandType::Connect as u8);
                 buf.put_u32(*stream_id);
                 buf.put_u16(*port);
@@ -148,7 +147,11 @@ impl TunnelMessage {
                 buf.put_u8(CommandType::Close as u8);
                 buf.put_u32(*stream_id);
             }
-            TunnelMessage::ErrorReply { stream_id, code, message } => {
+            TunnelMessage::ErrorReply {
+                stream_id,
+                code,
+                message,
+            } => {
                 buf.put_u8(CommandType::ErrorReply as u8);
                 buf.put_u32(*stream_id);
                 buf.put_u16(*code);
@@ -161,7 +164,12 @@ impl TunnelMessage {
             TunnelMessage::Pong => {
                 buf.put_u8(CommandType::Pong as u8);
             }
-            TunnelMessage::UdpDatagram { request_id, host, port, payload } => {
+            TunnelMessage::UdpDatagram {
+                request_id,
+                host,
+                port,
+                payload,
+            } => {
                 buf.put_u8(CommandType::UdpDatagram as u8);
                 buf.put_u32(*request_id);
                 buf.put_u16(*port);
@@ -176,7 +184,10 @@ impl TunnelMessage {
                 buf.put_u32(query.len() as u32);
                 buf.put_slice(query);
             }
-            TunnelMessage::DnsResponse { request_id, response } => {
+            TunnelMessage::DnsResponse {
+                request_id,
+                response,
+            } => {
                 buf.put_u8(CommandType::DnsResponse as u8);
                 buf.put_u32(*request_id);
                 buf.put_u32(response.len() as u32);
@@ -204,16 +215,20 @@ impl TunnelMessage {
                 let stream_id = cursor.get_u32();
                 let port = cursor.get_u16();
                 let host_len = cursor.get_u16() as usize;
-                
+
                 if cursor.remaining() < host_len {
                     return Err(crate::ProtoError::InsufficientData);
                 }
                 let mut host_bytes = vec![0u8; host_len];
                 cursor.copy_to_slice(&mut host_bytes);
-                let host = String::from_utf8(host_bytes)
-                    .map_err(|_| crate::ProtoError::InvalidUtf8)?;
+                let host =
+                    String::from_utf8(host_bytes).map_err(|_| crate::ProtoError::InvalidUtf8)?;
 
-                Ok(TunnelMessage::Connect { stream_id, host, port })
+                Ok(TunnelMessage::Connect {
+                    stream_id,
+                    host,
+                    port,
+                })
             }
             CommandType::Data => {
                 if cursor.remaining() < 8 {
@@ -221,11 +236,12 @@ impl TunnelMessage {
                 }
                 let stream_id = cursor.get_u32();
                 let payload_len = cursor.get_u32() as usize;
-                
+
                 if cursor.remaining() < payload_len {
                     return Err(crate::ProtoError::InsufficientData);
                 }
-                let payload = Bytes::copy_from_slice(&data[cursor.position() as usize..][..payload_len]);
+                let payload =
+                    Bytes::copy_from_slice(&data[cursor.position() as usize..][..payload_len]);
 
                 Ok(TunnelMessage::Data { stream_id, payload })
             }
@@ -243,16 +259,20 @@ impl TunnelMessage {
                 let stream_id = cursor.get_u32();
                 let code = cursor.get_u16();
                 let msg_len = cursor.get_u16() as usize;
-                
+
                 if cursor.remaining() < msg_len {
                     return Err(crate::ProtoError::InsufficientData);
                 }
                 let mut msg_bytes = vec![0u8; msg_len];
                 cursor.copy_to_slice(&mut msg_bytes);
-                let message = String::from_utf8(msg_bytes)
-                    .map_err(|_| crate::ProtoError::InvalidUtf8)?;
+                let message =
+                    String::from_utf8(msg_bytes).map_err(|_| crate::ProtoError::InvalidUtf8)?;
 
-                Ok(TunnelMessage::ErrorReply { stream_id, code, message })
+                Ok(TunnelMessage::ErrorReply {
+                    stream_id,
+                    code,
+                    message,
+                })
             }
             CommandType::Ping => Ok(TunnelMessage::Ping),
             CommandType::Pong => Ok(TunnelMessage::Pong),
@@ -263,26 +283,32 @@ impl TunnelMessage {
                 let request_id = cursor.get_u32();
                 let port = cursor.get_u16();
                 let host_len = cursor.get_u16() as usize;
-                
+
                 if cursor.remaining() < host_len {
                     return Err(crate::ProtoError::InsufficientData);
                 }
                 let mut host_bytes = vec![0u8; host_len];
                 cursor.copy_to_slice(&mut host_bytes);
-                let host = String::from_utf8(host_bytes)
-                    .map_err(|_| crate::ProtoError::InvalidUtf8)?;
-                
+                let host =
+                    String::from_utf8(host_bytes).map_err(|_| crate::ProtoError::InvalidUtf8)?;
+
                 if cursor.remaining() < 4 {
                     return Err(crate::ProtoError::InsufficientData);
                 }
                 let payload_len = cursor.get_u32() as usize;
-                
+
                 if cursor.remaining() < payload_len {
                     return Err(crate::ProtoError::InsufficientData);
                 }
-                let payload = Bytes::copy_from_slice(&data[cursor.position() as usize..][..payload_len]);
-                
-                Ok(TunnelMessage::UdpDatagram { request_id, host, port, payload })
+                let payload =
+                    Bytes::copy_from_slice(&data[cursor.position() as usize..][..payload_len]);
+
+                Ok(TunnelMessage::UdpDatagram {
+                    request_id,
+                    host,
+                    port,
+                    payload,
+                })
             }
             CommandType::DnsQuery => {
                 if cursor.remaining() < 8 {
@@ -290,12 +316,13 @@ impl TunnelMessage {
                 }
                 let request_id = cursor.get_u32();
                 let query_len = cursor.get_u32() as usize;
-                
+
                 if cursor.remaining() < query_len {
                     return Err(crate::ProtoError::InsufficientData);
                 }
-                let query = Bytes::copy_from_slice(&data[cursor.position() as usize..][..query_len]);
-                
+                let query =
+                    Bytes::copy_from_slice(&data[cursor.position() as usize..][..query_len]);
+
                 Ok(TunnelMessage::DnsQuery { request_id, query })
             }
             CommandType::DnsResponse => {
@@ -304,13 +331,17 @@ impl TunnelMessage {
                 }
                 let request_id = cursor.get_u32();
                 let response_len = cursor.get_u32() as usize;
-                
+
                 if cursor.remaining() < response_len {
                     return Err(crate::ProtoError::InsufficientData);
                 }
-                let response = Bytes::copy_from_slice(&data[cursor.position() as usize..][..response_len]);
-                
-                Ok(TunnelMessage::DnsResponse { request_id, response })
+                let response =
+                    Bytes::copy_from_slice(&data[cursor.position() as usize..][..response_len]);
+
+                Ok(TunnelMessage::DnsResponse {
+                    request_id,
+                    response,
+                })
             }
         }
     }
@@ -329,9 +360,13 @@ mod tests {
         };
         let encoded = msg.encode();
         let decoded = TunnelMessage::decode(&encoded).unwrap();
-        
+
         match decoded {
-            TunnelMessage::Connect { stream_id, host, port } => {
+            TunnelMessage::Connect {
+                stream_id,
+                host,
+                port,
+            } => {
                 assert_eq!(stream_id, 42);
                 assert_eq!(host, "google.com");
                 assert_eq!(port, 443);
@@ -349,9 +384,12 @@ mod tests {
         };
         let encoded = msg.encode();
         let decoded = TunnelMessage::decode(&encoded).unwrap();
-        
+
         match decoded {
-            TunnelMessage::Data { stream_id, payload: p } => {
+            TunnelMessage::Data {
+                stream_id,
+                payload: p,
+            } => {
                 assert_eq!(stream_id, 1);
                 assert_eq!(p, payload);
             }
