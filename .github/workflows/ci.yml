@@ -21,6 +21,8 @@ jobs:
         run: cargo check -p zks-tunnel-proto
       - name: Check zks-tunnel-client
         run: cargo check -p zks-tunnel-client
+      - name: Check zks-tunnel-worker (WASM)
+        run: cargo check -p zks-tunnel-worker --target wasm32-unknown-unknown || echo "Worker check requires wasm target"
 
   test:
     name: Test

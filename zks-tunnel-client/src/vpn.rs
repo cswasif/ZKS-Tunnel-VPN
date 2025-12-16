@@ -556,15 +556,30 @@ pub use implementation::*;
 // Stub module when vpn feature is not enabled
 #[cfg(not(feature = "vpn"))]
 mod stub {
+    use std::net::Ipv4Addr;
+    
     /// VPN configuration (stub)
-    #[derive(Debug, Clone, Default)]
+    #[derive(Debug, Clone)]
     pub struct VpnConfig {
         pub device_name: String,
-        pub address: std::net::Ipv4Addr,
-        pub netmask: std::net::Ipv4Addr,
+        pub address: Ipv4Addr,
+        pub netmask: Ipv4Addr,
         pub mtu: u16,
         pub dns_protection: bool,
         pub kill_switch: bool,
+    }
+    
+    impl Default for VpnConfig {
+        fn default() -> Self {
+            Self {
+                device_name: "zks0".to_string(),
+                address: Ipv4Addr::new(10, 0, 85, 1),
+                netmask: Ipv4Addr::new(255, 255, 255, 0),
+                mtu: 1500,
+                dns_protection: true,
+                kill_switch: true,
+            }
+        }
     }
     
     /// VPN state (stub)

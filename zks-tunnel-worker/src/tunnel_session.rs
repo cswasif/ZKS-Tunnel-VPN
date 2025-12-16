@@ -1,7 +1,7 @@
 //! TunnelSession - Durable Object for persistent WebSocket connections
 //!
 //! Production-grade implementation with:
-//! - Efficient connection pooling via HashMap
+//! - Full bidirectional TCP relay
 //! - Proper error handling and logging
 //! - Memory-efficient buffer management
 //! - Hibernation support for zero-cost idle connections
@@ -12,14 +12,11 @@ use zks_tunnel_proto::{TunnelMessage, StreamId};
 use std::collections::HashMap;
 use std::cell::RefCell;
 use std::rc::Rc;
+use wasm_bindgen_futures::spawn_local;
 
-/// Connection state for tracking active streams
-#[derive(Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-enum StreamStatus {
-    Connecting,
-    Connected,
-    Closing,
+/// Stream information including write half of socket
+struct StreamInfo {
+    socket: tokio::io::WriteHalf<Socket>,
 }
 
 #[durable_object]
@@ -27,9 +24,8 @@ pub struct TunnelSession {
     state: State,
     #[allow(dead_code)]
     env: Env,
-    /// Active stream tracking - lightweight state management
-    /// Maps stream_id -> status
-    active_streams: Rc<RefCell<HashMap<StreamId, StreamStatus>>>,
+    /// Active stream tracking - maps stream_id -> socket
+    active_streams: Rc<RefCell<HashMap<StreamId, StreamInfo>>>,
     /// Connection counter for metrics
     connection_count: Rc<RefCell<u32>>,
 }
@@ -215,7 +211,7 @@ impl TunnelSession {
         let _ = ws.send_with_bytes(&error_msg.encode());
     }
 
-    /// Handle CONNECT command - establish outbound TCP connection
+    /// Handle CONNECT command - establish outbound TCP connection and spawn reader task
     async fn handle_connect(
         &self,
         ws: &WebSocket,
@@ -230,29 +226,71 @@ impl TunnelSession {
             return Ok(());
         }
 
-        // Mark stream as connecting
-        self.active_streams.borrow_mut().insert(stream_id, StreamStatus::Connecting);
-
         let address = format!("{}:{}", host, port);
         console_log!("[TunnelSession] Connecting to {}", address);
 
         // Use Socket::builder().connect() for outbound TCP
         match Socket::builder().connect(host, port) {
-            Ok(_socket) => {
+            Ok(socket) => {
                 console_log!("[TunnelSession] Connected to {}", address);
                 
-                // Mark as connected
-                self.active_streams.borrow_mut().insert(stream_id, StreamStatus::Connected);
+                // Split socket into read and write halves
+                let (mut read_half, write_half) = tokio::io::split(socket);
                 
-                // Note: Full bidirectional I/O requires spawning tasks
-                // In production, we'd spawn reader/writer tasks here
-                // For now, connection is established and tracked
+                // Spawn a task to read from socket using tokio AsyncReadExt
+                let ws_for_reader = ws.clone();
+                let active_streams_for_reader = self.active_streams.clone();
                 
-                console_log!("[TunnelSession] Stream {} ready for data", stream_id);
+                spawn_local(async move {
+                    use tokio::io::AsyncReadExt;
+                    let mut buffer = vec![0u8; 16384];
+                    
+                    loop {
+                        // Read from socket (Server -> Client)
+                        match read_half.read(&mut buffer).await {
+                            Ok(0) => {
+                                // Socket closed by remote
+                                console_log!("[TunnelSession] Socket {} closed by remote", stream_id);
+                                
+                                // Notify client
+                                let close_msg = TunnelMessage::Close { stream_id };
+                                let _ = ws_for_reader.send_with_bytes(&close_msg.encode());
+                                
+                                // Clean up
+                                active_streams_for_reader.borrow_mut().remove(&stream_id);
+                                break;
+                            }
+                            Ok(n) => {
+                                // Send DATA message to client
+                                let msg = TunnelMessage::Data {
+                                    stream_id,
+                                    payload: bytes::Bytes::copy_from_slice(&buffer[..n]),
+                                };
+                                if ws_for_reader.send_with_bytes(&msg.encode()).is_err() {
+                                    console_error!("[TunnelSession] Failed to send data for stream {}", stream_id);
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                console_error!("[TunnelSession] Socket read error on stream {}: {:?}", stream_id, e);
+                                Self::send_error(&ws_for_reader, stream_id, 500, "Socket read error");
+                                active_streams_for_reader.borrow_mut().remove(&stream_id);
+                                break;
+                            }
+                        }
+                    }
+                    console_log!("[TunnelSession] Reader task exiting for stream {}", stream_id);
+                });
+                
+                // Store write half for Client -> Server direction (handled in handle_data)
+                self.active_streams.borrow_mut().insert(stream_id, StreamInfo {
+                    socket: write_half,
+                });
+                
+                console_log!("[TunnelSession] Stream {} ready for bidirectional data transfer", stream_id);
             }
             Err(e) => {
                 console_error!("[TunnelSession] Connect failed to {}: {:?}", address, e);
-                self.active_streams.borrow_mut().remove(&stream_id);
                 Self::send_error(ws, stream_id, 502, &format!("Connection failed: {:?}", e));
             }
         }
@@ -260,22 +298,28 @@ impl TunnelSession {
         Ok(())
     }
 
-    /// Handle DATA command - forward data to TCP socket
+    /// Handle DATA command - forward data to TCP socket (Client -> Server)
     async fn handle_data(&self, ws: &WebSocket, stream_id: StreamId, payload: &[u8]) -> Result<()> {
-        // Check stream exists and is connected
-        let status = self.active_streams.borrow().get(&stream_id).copied();
+        use tokio::io::AsyncWriteExt;
         
-        match status {
-            Some(StreamStatus::Connected) => {
-                // TODO: Write to socket when full I/O is implemented
-                console_log!("[TunnelSession] DATA stream={} len={}", stream_id, payload.len());
+        // Get mutable access to streams
+        let mut streams = self.active_streams.borrow_mut();
+        
+        if let Some(stream_info) = streams.get_mut(&stream_id) {
+            // Write data to socket
+            match stream_info.socket.write_all(payload).await {
+                Ok(()) => {
+                    console_log!("[TunnelSession] Wrote {} bytes to stream {}", payload.len(), stream_id);
+                }
+                Err(e) => {
+                    console_error!("[TunnelSession] Socket write error on stream {}: {:?}", stream_id, e);
+                    streams.remove(&stream_id);
+                    Self::send_error(ws, stream_id, 500, &format!("Write error: {:?}", e));
+                }
             }
-            Some(StreamStatus::Connecting) => {
-                console_warn!("[TunnelSession] DATA received while stream {} still connecting", stream_id);
-            }
-            Some(StreamStatus::Closing) | None => {
-                Self::send_error(ws, stream_id, 404, "Stream not found");
-            }
+        } else {
+            console_warn!("[TunnelSession] DATA for unknown stream {}", stream_id);
+            Self::send_error(ws, stream_id, 404, "Stream not found");
         }
         
         Ok(())
@@ -283,8 +327,13 @@ impl TunnelSession {
 
     /// Handle CLOSE command - close TCP socket
     async fn handle_close(&self, stream_id: StreamId) -> Result<()> {
-        if let Some(status) = self.active_streams.borrow_mut().remove(&stream_id) {
-            console_log!("[TunnelSession] CLOSE stream={} (was {:?})", stream_id, status);
+        if let Some(info) = self.active_streams.borrow_mut().remove(&stream_id) {
+            console_log!("[TunnelSession] CLOSE stream={}", stream_id);
+            
+            // Socket will be dropped automatically, closing the connection
+            drop(info);
+            
+            console_log!("[TunnelSession] Stream {} closed gracefully", stream_id);
         } else {
             console_log!("[TunnelSession] CLOSE stream={} (not found)", stream_id);
         }
@@ -386,16 +435,5 @@ impl TunnelSession {
         uint8_array.copy_to(&mut vec);
         
         Ok(vec)
-    }
-}
-
-// Implement Debug for StreamStatus
-impl std::fmt::Debug for StreamStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            StreamStatus::Connecting => write!(f, "Connecting"),
-            StreamStatus::Connected => write!(f, "Connected"),
-            StreamStatus::Closing => write!(f, "Closing"),
-        }
     }
 }

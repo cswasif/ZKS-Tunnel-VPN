@@ -20,3 +20,4 @@ serde_json = { workspace = true }
 futures = { workspace = true }
 bytes = { workspace = true }
 getrandom = { version = "0.2", features = ["js"] }
+tokio = { version = "1", default-features = false, features = ["io-util"] }
