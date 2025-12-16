@@ -255,8 +255,8 @@ mod implementation {
 
                 while running.load(Ordering::SeqCst) {
                     match tcp_listener.next().await {
-                        Some((stream, local_addr, remote_addr)) => {
-                            debug!("New TCP connection: {} -> {}", remote_addr, local_addr);
+                        Some((stream, src_addr, dst_addr)) => {
+                            debug!("New TCP connection: {} -> {}", src_addr, dst_addr);
 
                             let tunnel = tunnel.clone();
                             let stats = stats.clone();
@@ -269,14 +269,14 @@ mod implementation {
                                 }
 
                                 // Open tunnel stream to destination
-                                let dest_host: String = local_addr.to_string(); // Assuming SocketAddr
-                                let dest_port = local_addr.port();
+                                let dest_host: String = dst_addr.to_string(); // Destination is the target
+                                let dest_port = dst_addr.port();
 
                                 match tunnel.open_stream(&dest_host, dest_port).await {
                                     Ok((stream_id, rx)) => {
                                         debug!(
                                             "Tunnel stream {} opened for {}",
-                                            stream_id, local_addr
+                                            stream_id, dst_addr
                                         );
 
                                         // Relay data
