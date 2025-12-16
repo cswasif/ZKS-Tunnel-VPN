@@ -34,6 +34,8 @@ pub enum CommandType {
     DnsQuery = 0x08,
     /// DNS response
     DnsResponse = 0x09,
+    /// Connection established successfully
+    ConnectSuccess = 0x0A,
 }
 
 impl TryFrom<u8> for CommandType {
@@ -50,6 +52,7 @@ impl TryFrom<u8> for CommandType {
             0x07 => Ok(Self::UdpDatagram),
             0x08 => Ok(Self::DnsQuery),
             0x09 => Ok(Self::DnsResponse),
+            0x0A => Ok(Self::ConnectSuccess),
             _ => Err(crate::ProtoError::InvalidCommand(value)),
         }
     }
@@ -107,6 +110,8 @@ pub enum TunnelMessage {
         /// Raw DNS response packet
         response: Bytes,
     },
+    /// Connection established successfully
+    ConnectSuccess { stream_id: StreamId },
 }
 
 impl TunnelMessage {
@@ -122,6 +127,7 @@ impl TunnelMessage {
     /// - UDP_DATAGRAM: [cmd:1][request_id:4][port:2][host_len:2][host:N][payload_len:4][payload:N]
     /// - DNS_QUERY:    [cmd:1][request_id:4][query_len:4][query:N]
     /// - DNS_RESPONSE: [cmd:1][request_id:4][response_len:4][response:N]
+    /// - CONNECT_SUCCESS: [cmd:1][stream_id:4]
     pub fn encode(&self) -> Bytes {
         let mut buf = BytesMut::with_capacity(256);
 
@@ -192,6 +198,10 @@ impl TunnelMessage {
                 buf.put_u32(*request_id);
                 buf.put_u32(response.len() as u32);
                 buf.put_slice(response);
+            }
+            TunnelMessage::ConnectSuccess { stream_id } => {
+                buf.put_u8(CommandType::ConnectSuccess as u8);
+                buf.put_u32(*stream_id);
             }
         }
 
@@ -342,6 +352,13 @@ impl TunnelMessage {
                     request_id,
                     response,
                 })
+            }
+            CommandType::ConnectSuccess => {
+                if cursor.remaining() < 4 {
+                    return Err(crate::ProtoError::InsufficientData);
+                }
+                let stream_id = cursor.get_u32();
+                Ok(TunnelMessage::ConnectSuccess { stream_id })
             }
         }
     }

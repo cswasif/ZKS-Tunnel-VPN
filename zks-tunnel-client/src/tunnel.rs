@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 use tracing::{debug, error, info, warn};
 use zks_tunnel_proto::{StreamId, TunnelMessage};
@@ -34,6 +34,8 @@ pub struct TunnelClient {
     next_stream_id: AtomicU32,
     /// Active streams - maps stream_id to sender for that stream's data
     streams: Arc<Mutex<HashMap<StreamId, StreamState>>>,
+    /// Pending connection requests - maps stream_id to oneshot sender for result
+    pending_connections: Arc<Mutex<HashMap<StreamId, oneshot::Sender<Result<(), String>>>>>,
 }
 
 impl TunnelClient {
@@ -53,6 +55,11 @@ impl TunnelClient {
         let streams: Arc<Mutex<HashMap<StreamId, StreamState>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let streams_clone = streams.clone();
+
+        // Pending connections map - shared between reader task and main client
+        let pending_connections: Arc<Mutex<HashMap<StreamId, oneshot::Sender<Result<(), String>>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let pending_connections_clone = pending_connections.clone();
 
         // Spawn writer task - sends messages from channel to WebSocket
         let writer_handle = tokio::spawn(async move {
@@ -100,9 +107,23 @@ impl TunnelClient {
                                     );
                                     let mut streams = streams_clone.lock().await;
                                     streams.remove(&stream_id);
+                                    
+                                    // Also check pending connections
+                                    let mut pending = pending_connections_clone.lock().await;
+                                    if let Some(tx) = pending.remove(&stream_id) {
+                                        let _ = tx.send(Err(format!("Stream error: {} (code {})", message, code)));
+                                    }
                                 }
                                 TunnelMessage::Pong => {
                                     debug!("Received pong");
+                                }
+                                TunnelMessage::ConnectSuccess { stream_id } => {
+                                    let mut pending = pending_connections_clone.lock().await;
+                                    if let Some(tx) = pending.remove(&stream_id) {
+                                        let _ = tx.send(Ok(()));
+                                    } else {
+                                        warn!("Received ConnectSuccess for unknown stream {}", stream_id);
+                                    }
                                 }
                                 _ => {}
                             }
@@ -129,6 +150,7 @@ impl TunnelClient {
             sender,
             next_stream_id: AtomicU32::new(1),
             streams,
+            pending_connections,
         })
     }
 
@@ -141,6 +163,20 @@ impl TunnelClient {
     ) -> Result<(StreamId, mpsc::Receiver<Bytes>), Box<dyn std::error::Error + Send + Sync>> {
         let stream_id = self.next_stream_id.fetch_add(1, Ordering::SeqCst);
 
+        // Create channel for receiving data for this stream (bounded for backpressure)
+        let (tx, rx) = mpsc::channel::<Bytes>(256);
+        {
+            let mut streams = self.streams.lock().await;
+            streams.insert(stream_id, StreamState { tx });
+        }
+
+        // Create oneshot channel for connection result
+        let (resp_tx, resp_rx) = oneshot::channel();
+        {
+            let mut pending = self.pending_connections.lock().await;
+            pending.insert(stream_id, resp_tx);
+        }
+
         // Send CONNECT command
         let msg = TunnelMessage::Connect {
             stream_id,
@@ -149,15 +185,30 @@ impl TunnelClient {
         };
         self.sender.send(msg).await?;
 
-        // Create channel for receiving data for this stream (bounded for backpressure)
-        let (tx, rx) = mpsc::channel::<Bytes>(256);
-        {
-            let mut streams = self.streams.lock().await;
-            streams.insert(stream_id, StreamState { tx });
+        // Wait for ConnectSuccess or ErrorReply
+        match tokio::time::timeout(std::time::Duration::from_secs(10), resp_rx).await {
+            Ok(Ok(Ok(()))) => {
+                debug!("Opened stream {} to {}:{}", stream_id, host, port);
+                Ok((stream_id, rx))
+            }
+            Ok(Ok(Err(e))) => {
+                // Connection failed (ErrorReply received)
+                self.streams.lock().await.remove(&stream_id);
+                Err(format!("Connection failed: {}", e).into())
+            }
+            Ok(Err(_)) => {
+                // Oneshot channel closed (should not happen normally)
+                self.streams.lock().await.remove(&stream_id);
+                self.pending_connections.lock().await.remove(&stream_id);
+                Err("Connection aborted".into())
+            }
+            Err(_) => {
+                // Timeout
+                self.streams.lock().await.remove(&stream_id);
+                self.pending_connections.lock().await.remove(&stream_id);
+                Err("Connection timed out".into())
+            }
         }
-
-        debug!("Opened stream {} to {}:{}", stream_id, host, port);
-        Ok((stream_id, rx))
     }
 
     /// Relay data between local TCP socket and tunnel stream (BIDIRECTIONAL)

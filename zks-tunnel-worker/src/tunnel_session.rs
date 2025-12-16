@@ -211,6 +211,13 @@ impl TunnelSession {
 
                 console_log!("[TunnelSession] Connected to {}", address);
 
+                // Send ConnectSuccess to client
+                let success_msg = TunnelMessage::ConnectSuccess { stream_id };
+                if let Err(e) = ws.send_with_bytes(&success_msg.encode()) {
+                    console_error!("[TunnelSession] Failed to send ConnectSuccess: {:?}", e);
+                    return Ok(());
+                }
+
                 // Create channel for write requests (bounded to prevent memory issues)
                 let (write_tx, write_rx) = mpsc::channel::<Bytes>(64);
 
