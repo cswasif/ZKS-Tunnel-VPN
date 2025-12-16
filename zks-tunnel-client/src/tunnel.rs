@@ -58,7 +58,7 @@ impl TunnelClient {
         let writer_handle = tokio::spawn(async move {
             while let Some(msg) = receiver.recv().await {
                 let encoded = msg.encode();
-                if let Err(e) = write.send(Message::Binary(encoded.to_vec().into())).await {
+                if let Err(e) = write.send(Message::Binary(encoded.to_vec())).await {
                     error!("WebSocket write error: {}", e);
                     break;
                 }

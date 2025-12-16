@@ -15,9 +15,8 @@
 
 use clap::{Parser, ValueEnum};
 use std::net::SocketAddr;
-use std::sync::Arc;
 use tokio::net::TcpListener;
-use tracing::{error, info, warn, Level};
+use tracing::{error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 
 mod socks5;
@@ -27,6 +26,10 @@ mod vpn;
 
 use socks5::Socks5Server;
 use tunnel::TunnelClient;
+
+#[cfg(feature = "vpn")]
+use std::sync::Arc;
+#[cfg(feature = "vpn")]
 use vpn::{VpnConfig, VpnController};
 
 /// Operating mode for the VPN client
@@ -167,13 +170,13 @@ async fn run_socks5_mode(args: Args, tunnel: TunnelClient) -> Result<(), BoxErro
 }
 
 /// Run in system-wide VPN mode
-async fn run_vpn_mode(args: Args, tunnel: TunnelClient) -> Result<(), BoxError> {
+async fn run_vpn_mode(_args: Args, _tunnel: TunnelClient) -> Result<(), BoxError> {
     // Check if VPN feature is enabled
     #[cfg(not(feature = "vpn"))]
     {
         error!("❌ VPN mode is not enabled!");
         error!("   Rebuild with: cargo build --release --features vpn");
-        return Err("VPN feature not enabled".into());
+        Err("VPN feature not enabled".into())
     }
 
     #[cfg(feature = "vpn")]
@@ -181,29 +184,29 @@ async fn run_vpn_mode(args: Args, tunnel: TunnelClient) -> Result<(), BoxError> 
         // Check for admin/root privileges
         check_privileges()?;
 
-        let vpn_addr: std::net::Ipv4Addr = args.vpn_address.parse()?;
+        let vpn_addr: std::net::Ipv4Addr = _args.vpn_address.parse()?;
 
         let config = VpnConfig {
-            device_name: args.tun_name.clone(),
+            device_name: _args.tun_name.clone(),
             address: vpn_addr,
             netmask: std::net::Ipv4Addr::new(255, 255, 255, 0),
             mtu: 1500,
-            dns_protection: args.dns_protection,
-            kill_switch: args.kill_switch,
+            dns_protection: _args.dns_protection,
+            kill_switch: _args.kill_switch,
         };
 
         info!("🔒 Starting system-wide VPN...");
         info!("   All traffic will be routed through the tunnel.");
 
-        if args.kill_switch {
+        if _args.kill_switch {
             info!("   Kill switch: ENABLED (traffic blocked if VPN drops)");
         }
 
-        if args.dns_protection {
+        if _args.dns_protection {
             info!("   DNS protection: ENABLED (queries via DoH)");
         }
 
-        let tunnel = Arc::new(tunnel);
+        let tunnel = Arc::new(_tunnel);
         let vpn = VpnController::new(tunnel, config);
 
         vpn.start().await?;
@@ -220,9 +223,6 @@ async fn run_vpn_mode(args: Args, tunnel: TunnelClient) -> Result<(), BoxError> 
 
         Ok(())
     }
-
-    #[cfg(not(feature = "vpn"))]
-    Ok(())
 }
 
 /// Check if running with admin/root privileges

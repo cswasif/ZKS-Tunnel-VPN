@@ -171,7 +171,7 @@ async fn send_reply(
         rep,
         0x00, // Reserved
         ATYP_IPV4,
-        addr_parts.get(0).copied().unwrap_or(0),
+        addr_parts.first().copied().unwrap_or(0),
         addr_parts.get(1).copied().unwrap_or(0),
         addr_parts.get(2).copied().unwrap_or(0),
         addr_parts.get(3).copied().unwrap_or(0),

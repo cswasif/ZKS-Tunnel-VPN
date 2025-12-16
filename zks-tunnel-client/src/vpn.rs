@@ -617,6 +617,7 @@ mod stub {
 
     /// VPN configuration (stub)
     #[derive(Debug, Clone)]
+    #[allow(dead_code)]
     pub struct VpnConfig {
         pub device_name: String,
         pub address: Ipv4Addr,
@@ -641,14 +642,17 @@ mod stub {
 
     /// VPN state (stub)
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[allow(dead_code)]
     pub enum VpnState {
         Disconnected,
     }
 
     /// VPN controller (stub - feature not enabled)
+    #[allow(dead_code)]
     pub struct VpnController;
 
     impl VpnController {
+        #[allow(dead_code)]
         pub fn new(
             _tunnel: std::sync::Arc<crate::tunnel::TunnelClient>,
             _config: VpnConfig,
@@ -656,14 +660,17 @@ mod stub {
             Self
         }
 
+        #[allow(dead_code)]
         pub async fn start(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Err("VPN feature is not enabled. Rebuild with --features vpn".into())
         }
 
+        #[allow(dead_code)]
         pub async fn stop(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Err("VPN feature is not enabled. Rebuild with --features vpn".into())
         }
 
+        #[allow(dead_code)]
         pub async fn state(&self) -> VpnState {
             VpnState::Disconnected
         }
@@ -671,4 +678,5 @@ mod stub {
 }
 
 #[cfg(not(feature = "vpn"))]
+#[allow(unused_imports)]
 pub use stub::*;
