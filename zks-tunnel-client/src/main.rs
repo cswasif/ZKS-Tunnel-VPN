@@ -16,7 +16,7 @@
 use clap::{Parser, ValueEnum};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
-use tracing::{error, info, warn, Level};
+use tracing::{error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 
 mod socks5;
@@ -232,8 +232,8 @@ fn check_privileges() -> Result<(), BoxError> {
     {
         // On Windows, check if running as Administrator
         // This is a simplified check - full implementation would use Windows API
-        warn!("⚠️  VPN mode requires Administrator privileges on Windows");
-        warn!("   Right-click zks-vpn.exe → Run as administrator");
+        tracing::warn!("⚠️  VPN mode requires Administrator privileges on Windows");
+        tracing::warn!("   Right-click zks-vpn.exe → Run as administrator");
     }
 
     #[cfg(unix)]
