@@ -11,6 +11,7 @@ use std::rc::Rc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use wasm_bindgen_futures::spawn_local;
 use worker::*;
+use worker::{Method, Url};
 use zks_tunnel_proto::{StreamId, TunnelMessage};
 
 /// Stream state - holds a sender for write requests to the socket task
@@ -327,7 +328,15 @@ impl TunnelSession {
                 // TODO: Copy headers from client request
                 // For now, basic fetch
                 
-                match Fetch::Url(url.parse().unwrap()).send().await {
+                let url_parsed = match Url::parse(&url) {
+                    Ok(u) => u,
+                    Err(e) => {
+                        console_error!("[TunnelSession] Invalid URL {}: {:?}", url, e);
+                        continue;
+                    }
+                };
+
+                match Fetch::Url(url_parsed).send().await {
                     Ok(mut response) => {
                         request_sent = true;
                         
@@ -356,12 +365,20 @@ impl TunnelSession {
 
                         // Stream Body
                         if let Ok(Some(mut body)) = response.body() {
-                             while let Ok(Some(chunk)) = body.read().await {
-                                 let msg = TunnelMessage::Data {
-                                     stream_id,
-                                     payload: Bytes::from(chunk),
-                                 };
-                                 let _ = ws_clone.send_with_bytes(&msg.encode());
+                             while let Some(chunk_res) = body.next().await {
+                                 match chunk_res {
+                                     Ok(chunk) => {
+                                         let msg = TunnelMessage::Data {
+                                             stream_id,
+                                             payload: Bytes::from(chunk),
+                                         };
+                                         let _ = ws_clone.send_with_bytes(&msg.encode());
+                                     }
+                                     Err(e) => {
+                                         console_error!("[TunnelSession] Body read error: {:?}", e);
+                                         break;
+                                     }
+                                 }
                              }
                         }
                         
