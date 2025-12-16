@@ -201,7 +201,10 @@ impl TunnelSession {
         // Cloudflare blocks connect() to ports 80 and 443 on standard plans.
         // For Port 80 (HTTP), we can use fetch() as a fallback proxy.
         if port == 80 {
-            console_log!("[TunnelSession] Port 80 detected - using Fetch Fallback for {}", host);
+            console_log!(
+                "[TunnelSession] Port 80 detected - using Fetch Fallback for {}",
+                host
+            );
             return self.handle_http_fetch(ws, stream_id, host).await;
         }
 
@@ -285,7 +288,7 @@ impl TunnelSession {
             // We need to read from write_rx (data from client)
             while let Some(chunk) = write_rx.next().await {
                 if request_sent {
-                    // If we already sent the request, we can't easily pipe more data 
+                    // If we already sent the request, we can't easily pipe more data
                     // into the fetch body unless we used a TransformStream (complex).
                     // For simple HTTP GET, this is usually fine. POST might be tricky.
                     // For now, ignore extra data or TODO: implement streaming upload.
@@ -297,18 +300,22 @@ impl TunnelSession {
                 // Check if we have a full HTTP header (double newline)
                 // or just try to send what we have if it looks like a request
                 // Simple heuristic: assume the first chunk(s) contain the method and path.
-                
+
                 // Parse method and path from buffer
                 let req_str = String::from_utf8_lossy(&buffer);
                 let lines: Vec<&str> = req_str.lines().collect();
-                if lines.is_empty() { continue; }
+                if lines.is_empty() {
+                    continue;
+                }
 
                 let first_line = lines[0];
                 let parts: Vec<&str> = first_line.split_whitespace().collect();
-                if parts.len() < 2 { continue; }
+                if parts.len() < 2 {
+                    continue;
+                }
 
                 let method = parts[0]; // GET, POST, etc.
-                let path = parts[1];   // /, /foo, etc.
+                let path = parts[1]; // /, /foo, etc.
 
                 // Construct full URL
                 let url = format!("http://{}{}", host_owned, path);
@@ -324,10 +331,10 @@ impl TunnelSession {
                     "DELETE" => Method::Delete,
                     _ => Method::Get,
                 };
-                
+
                 // TODO: Copy headers from client request
                 // For now, basic fetch
-                
+
                 let url_parsed = match Url::parse(&url) {
                     Ok(u) => u,
                     Err(e) => {
@@ -339,7 +346,7 @@ impl TunnelSession {
                 match Fetch::Url(url_parsed).send().await {
                     Ok(mut response) => {
                         request_sent = true;
-                        
+
                         // Reconstruct HTTP Response Status Line
                         // worker::Response doesn't always expose status_text, so we use a default
                         let status_code = response.status_code();
@@ -364,7 +371,8 @@ impl TunnelSession {
                         let headers = response.headers();
                         // headers.entries() returns an iterator of (String, String)
                         for (k, v) in headers.entries() {
-                            if k.to_lowercase() != "transfer-encoding" { // Chunked handled by us
+                            if k.to_lowercase() != "transfer-encoding" {
+                                // Chunked handled by us
                                 head.extend_from_slice(format!("{}: {}\r\n", k, v).as_bytes());
                             }
                         }
@@ -397,7 +405,7 @@ impl TunnelSession {
                                 }
                             }
                         }
-                        
+
                         // Close stream
                         let close_msg = TunnelMessage::Close { stream_id };
                         let _ = ws_clone.send_with_bytes(&close_msg.encode());
