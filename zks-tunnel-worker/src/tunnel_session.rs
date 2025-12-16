@@ -201,8 +201,17 @@ impl TunnelSession {
         // Cloudflare blocks connect() to ports 80 and 443 on standard plans.
         // For Port 80 (HTTP), we can use fetch() as a fallback proxy.
         if port == 80 {
-            // console_log!("[TunnelSession] Port 80 detected...");
-            return self.handle_http_fetch(ws, stream_id, host).await;
+            return self.handle_http_fetch(ws, stream_id, host, false).await;
+        }
+        
+        // Port 443 (HTTPS) cannot be proxied via fetch() because the client sends
+        // encrypted TLS data that we cannot interpret. Return a clear error.
+        if port == 443 {
+            Self::send_error(ws, stream_id, 403, &format!(
+                "HTTPS (port 443) is blocked by Cloudflare on standard plans. Host: {}. \
+                 Use HTTP sites or upgrade to Cloudflare Enterprise.", host
+            ));
+            return Ok(());
         }
 
         let address = format!("{}:{}", host, port);
@@ -254,14 +263,16 @@ impl TunnelSession {
         Ok(())
     }
 
-    /// Handle HTTP requests via fetch() instead of raw TCP connect()
+    /// Handle HTTP/HTTPS requests via fetch() instead of raw TCP connect()
     /// This is a "Blind Proxy" - it opens a stream, reads the HTTP request from the client,
     /// parses it (roughly), sends a fetch(), and streams the response back.
+    /// Note: HTTPS doesn't work because client sends TLS-encrypted data we can't parse.
     async fn handle_http_fetch(
         &self,
         ws: &WebSocket,
         stream_id: StreamId,
         host: &str,
+        _is_https: bool, // Reserved for future use
     ) -> Result<()> {
         // 1. Send ConnectSuccess immediately (we pretend we connected)
         let success_msg = TunnelMessage::ConnectSuccess { stream_id };
@@ -314,9 +325,9 @@ impl TunnelSession {
                 let method = parts[0]; // GET, POST, etc.
                 let path = parts[1]; // /, /foo, etc.
 
-                // Construct full URL
-                let url = format!("http://{}{}", host_owned, path);
-                // console_log!("[TunnelSession] Fetching URL: {}", url);
+                // Construct full URL with correct scheme
+                let scheme = if is_https { "https" } else { "http" };
+                let url = format!("{}://{}{}", scheme, host_owned, path);
 
                 // Prepare Fetch
                 let mut init = RequestInit::new();
