@@ -256,6 +256,7 @@ impl TunnelClient {
     }
 
     /// Get a clone of the message sender
+    #[allow(dead_code)]
     pub fn sender(&self) -> mpsc::Sender<TunnelMessage> {
         self.sender.clone()
     }
