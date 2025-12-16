@@ -198,24 +198,13 @@ impl TunnelSession {
             return Ok(());
         }
 
-        // Cloudflare blocks connect() to ports 80 and 443 on standard plans.
-        // For Port 80 (HTTP), we can use fetch() as a fallback proxy.
+        // Cloudflare blocks connect() to port 80. Use fetch() as a fallback.
+        // Port 443 (HTTPS) CAN work via connect() for non-Cloudflare-proxied sites.
         if port == 80 {
             return self.handle_http_fetch(ws, stream_id, host, false).await;
         }
-        
-        // Port 443 (HTTPS) cannot be proxied via fetch() because the client sends
-        // encrypted TLS data that we cannot interpret. Return a clear error.
-        if port == 443 {
-            Self::send_error(ws, stream_id, 403, &format!(
-                "HTTPS (port 443) is blocked by Cloudflare on standard plans. Host: {}. \
-                 Use HTTP sites or upgrade to Cloudflare Enterprise.", host
-            ));
-            return Ok(());
-        }
 
         let address = format!("{}:{}", host, port);
-        // console_log!("[TunnelSession] Connecting to {}", address);
 
         match Socket::builder().connect(host, port) {
             Ok(socket) => {
