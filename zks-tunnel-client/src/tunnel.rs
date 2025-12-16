@@ -26,6 +26,8 @@ struct StreamState {
     tx: mpsc::Sender<Bytes>,
 }
 
+type PendingMap = Arc<Mutex<HashMap<StreamId, oneshot::Sender<Result<(), String>>>>>;
+
 /// Production-grade tunnel client with connection multiplexing
 pub struct TunnelClient {
     /// Sender for outgoing messages
@@ -35,7 +37,7 @@ pub struct TunnelClient {
     /// Active streams - maps stream_id to sender for that stream's data
     streams: Arc<Mutex<HashMap<StreamId, StreamState>>>,
     /// Pending connection requests - maps stream_id to oneshot sender for result
-    pending_connections: Arc<Mutex<HashMap<StreamId, oneshot::Sender<Result<(), String>>>>>,
+    pending_connections: PendingMap,
 }
 
 impl TunnelClient {
@@ -57,8 +59,7 @@ impl TunnelClient {
         let streams_clone = streams.clone();
 
         // Pending connections map - shared between reader task and main client
-        let pending_connections: Arc<Mutex<HashMap<StreamId, oneshot::Sender<Result<(), String>>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let pending_connections: PendingMap = Arc::new(Mutex::new(HashMap::new()));
         let pending_connections_clone = pending_connections.clone();
 
         // Spawn writer task - sends messages from channel to WebSocket
@@ -107,11 +108,14 @@ impl TunnelClient {
                                     );
                                     let mut streams = streams_clone.lock().await;
                                     streams.remove(&stream_id);
-                                    
+
                                     // Also check pending connections
                                     let mut pending = pending_connections_clone.lock().await;
                                     if let Some(tx) = pending.remove(&stream_id) {
-                                        let _ = tx.send(Err(format!("Stream error: {} (code {})", message, code)));
+                                        let _ = tx.send(Err(format!(
+                                            "Stream error: {} (code {})",
+                                            message, code
+                                        )));
                                     }
                                 }
                                 TunnelMessage::Pong => {
@@ -122,7 +126,10 @@ impl TunnelClient {
                                     if let Some(tx) = pending.remove(&stream_id) {
                                         let _ = tx.send(Ok(()));
                                     } else {
-                                        warn!("Received ConnectSuccess for unknown stream {}", stream_id);
+                                        warn!(
+                                            "Received ConnectSuccess for unknown stream {}",
+                                            stream_id
+                                        );
                                     }
                                 }
                                 _ => {}
