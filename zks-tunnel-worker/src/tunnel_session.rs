@@ -325,9 +325,8 @@ impl TunnelSession {
                 let method = parts[0]; // GET, POST, etc.
                 let path = parts[1]; // /, /foo, etc.
 
-                // Construct full URL with correct scheme
-                let scheme = if is_https { "https" } else { "http" };
-                let url = format!("{}://{}{}", scheme, host_owned, path);
+                // Construct full URL (always HTTP since we only use this for port 80)
+                let url = format!("http://{}{}", host_owned, path);
 
                 // Prepare Fetch
                 let mut init = RequestInit::new();
