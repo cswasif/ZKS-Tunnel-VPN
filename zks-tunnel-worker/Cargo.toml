@@ -1,0 +1,22 @@
+[package]
+name = "zks-tunnel-worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "ZKS-Tunnel Cloudflare Worker - Serverless VPN Gateway"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+zks-tunnel-proto = { path = "../zks-tunnel-proto" }
+worker = "0.7.1"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+console_error_panic_hook = "0.1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+futures = { workspace = true }
+bytes = { workspace = true }
+getrandom = { version = "0.2", features = ["js"] }

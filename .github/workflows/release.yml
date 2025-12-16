@@ -1,0 +1,84 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: zks-vpn
+            archive: zks-vpn-linux-x64.tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: zks-vpn.exe
+            archive: zks-vpn-windows-x64.zip
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: zks-vpn
+            archive: zks-vpn-macos-x64.tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: zks-vpn
+            archive: zks-vpn-macos-arm64.tar.gz
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      
+      - uses: Swatinem/rust-cache@v2
+      
+      - name: Build release
+        run: cargo build --release -p zks-tunnel-client --target ${{ matrix.target }}
+      
+      - name: Create archive (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar -czvf ../../../${{ matrix.archive }} ${{ matrix.artifact }}
+      
+      - name: Create archive (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cd target/${{ matrix.target }}/release
+          Compress-Archive -Path ${{ matrix.artifact }} -DestinationPath ../../../${{ matrix.archive }}
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

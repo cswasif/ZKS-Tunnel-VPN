@@ -1,0 +1,14 @@
+name = "zks-tunnel-worker"
+main = "build/worker/shim.mjs"
+compatibility_date = "2024-01-01"
+
+[build]
+command = "cargo install worker-build && worker-build --release"
+
+[[durable_objects.bindings]]
+name = "TUNNEL_SESSION"
+class_name = "TunnelSession"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["TunnelSession"]
