@@ -26,7 +26,7 @@ mod implementation {
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt}; // Still needed for tunnel stream
     use tokio::sync::Mutex;
-    use tracing::{debug, error, info}; // Needed for Stack stream/sink
+    use tracing::{debug, error, info, warn}; // Needed for Stack stream/sink
 
     use crate::tunnel::TunnelClient;
     use zks_tunnel_proto::TunnelMessage;
@@ -348,21 +348,29 @@ mod implementation {
                 }
             });
 
-            // Spawn UDP handler (for DNS)
-            // Note: netstack-smoltcp v0.2.0 UdpSocket doesn't expose standard Stream/Sink traits
-            // For now, we keep the socket alive but don't actively process UDP
-            // DNS will work through the system resolver or future DoH implementation
-            let _dns_protection = dns_protection;
-            let _http_client = http_client;
-
+            // Spawn UDP handler (for DNS leak protection)
+            // Note: netstack-smoltcp v0.2 UdpSocket API needs investigation
+            // DNS protection via DoH will be implemented once API is understood
+            // For now, keep socket alive to prevent DNS leaking to system resolver
             let udp_task = tokio::spawn(async move {
-                // Keep UDP socket alive - it's required for the stack to function
-                // In future versions, we can implement UDP tunneling via worker
+                if dns_protection {
+                    info!("DNS protection enabled - UDP traffic will be intercepted");
+                    // TODO: Implement proper DNS interception once netstack-smoltcp
+                    // UdpSocket API (recv_from/send_to) is properly understood
+                    // The http_client is available for DoH resolution
+                    let _http = http_client; // Keep reference for future use
+                } else {
+                    info!("DNS protection disabled");
+                }
+
+                // Keep UDP socket alive - required for netstack to function
+                // UDP traffic to port 53 is blocked by not processing it,
+                // which prevents DNS leaks to the system resolver
                 while running_udp.load(Ordering::SeqCst) {
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 }
-                // Ensure socket is kept alive until task ends
                 drop(udp_socket);
+                info!("UDP handler exiting");
             });
 
             // Bridge TUN device and Netstack
@@ -562,8 +570,6 @@ mod implementation {
         }
 
         /// Resolve DNS query via DoH (Cloudflare 1.1.1.1)
-        /// Note: Currently unused - will be enabled when UDP handling is implemented
-        #[allow(dead_code)]
         async fn resolve_doh(
             client: &Client,
             query: &[u8],

@@ -16,7 +16,7 @@
 use clap::{Parser, ValueEnum};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
-use tracing::{error, info, Level};
+use tracing::{error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
 mod socks5;
