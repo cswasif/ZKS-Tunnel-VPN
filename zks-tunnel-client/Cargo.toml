@@ -4,11 +4,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "ZKS-Tunnel Client - Local SOCKS5 proxy for VPN tunneling"
+description = "ZKS-Tunnel Client - Local SOCKS5 proxy and System-Wide VPN"
 
 [[bin]]
 name = "zks-vpn"
 path = "src/main.rs"
+
+[features]
+default = ["socks5"]
+socks5 = []
+vpn = ["tun-rs", "netstack-smoltcp", "smoltcp"]
 
 [dependencies]
 zks-tunnel-proto = { path = "../zks-tunnel-proto" }
@@ -25,3 +30,13 @@ clap = { version = "4.4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2.5"
+
+# System-Wide VPN dependencies (optional)
+tun-rs = { version = "2", optional = true, features = ["async"] }
+netstack-smoltcp = { version = "0.2", optional = true }
+smoltcp = { version = "0.11", optional = true, default-features = false, features = ["std", "medium-ip", "proto-ipv4", "proto-ipv6", "socket-tcp", "socket-udp", "socket-icmp"] }
+
+[target.'cfg(windows)'.dependencies]
+# Windows-specific: Wintun driver bindings
+wintun = { version = "0.5", optional = true }
+
