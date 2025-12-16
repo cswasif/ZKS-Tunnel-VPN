@@ -138,10 +138,29 @@ impl TunnelSession {
 
     fn is_valid_host(host: &str) -> bool {
         let blocked = [
-            "127.", "10.", "192.168.", "172.16.", "172.17.", "172.18.", "172.19.",
-            "172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.",
-            "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.",
-            "169.254.", "0.", "localhost", "::1",
+            "127.",
+            "10.",
+            "192.168.",
+            "172.16.",
+            "172.17.",
+            "172.18.",
+            "172.19.",
+            "172.20.",
+            "172.21.",
+            "172.22.",
+            "172.23.",
+            "172.24.",
+            "172.25.",
+            "172.26.",
+            "172.27.",
+            "172.28.",
+            "172.29.",
+            "172.30.",
+            "172.31.",
+            "169.254.",
+            "0.",
+            "localhost",
+            "::1",
         ];
 
         let host_lower = host.to_lowercase();
@@ -248,12 +267,7 @@ impl TunnelSession {
         Ok(())
     }
 
-    async fn handle_data(
-        &self,
-        ws: &WebSocket,
-        stream_id: StreamId,
-        payload: &[u8],
-    ) -> Result<()> {
+    async fn handle_data(&self, ws: &WebSocket, stream_id: StreamId, payload: &[u8]) -> Result<()> {
         let writer_opt = {
             let streams = self.active_streams.borrow();
             streams.get(&stream_id).map(|info| info.writer.clone())
@@ -330,8 +344,16 @@ fn base64_url_encode(data: &[u8]) -> String {
 
     while i < data.len() {
         let b0 = data[i] as usize;
-        let b1 = if i + 1 < data.len() { data[i + 1] as usize } else { 0 };
-        let b2 = if i + 2 < data.len() { data[i + 2] as usize } else { 0 };
+        let b1 = if i + 1 < data.len() {
+            data[i + 1] as usize
+        } else {
+            0
+        };
+        let b2 = if i + 2 < data.len() {
+            data[i + 2] as usize
+        } else {
+            0
+        };
 
         result.push(ALPHABET[b0 >> 2] as char);
         result.push(ALPHABET[((b0 & 0x03) << 4) | (b1 >> 4)] as char);
