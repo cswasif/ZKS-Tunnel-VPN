@@ -193,6 +193,15 @@ impl TunnelSession {
         host: &str,
         port: u16,
     ) -> Result<()> {
+        console_log!("[TunnelSession] DEBUG: Connect request for {}:{}", host, port);
+        
+        // DEBUG: Send Success immediately
+        let success_msg = TunnelMessage::ConnectSuccess { stream_id };
+        ws.send_with_bytes(&success_msg.encode())?;
+        
+        return Ok(());
+
+        /*
         if self.active_streams.borrow().contains_key(&stream_id) {
             Self::send_error(ws, stream_id, 409, "Stream ID already in use");
             return Ok(());
@@ -255,6 +264,7 @@ impl TunnelSession {
         }
 
         Ok(())
+        */
     }
 
     /// Handle HTTP requests via fetch() instead of raw TCP connect()
