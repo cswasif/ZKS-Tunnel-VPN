@@ -245,4 +245,9 @@ impl TunnelClient {
     pub async fn active_stream_count(&self) -> usize {
         self.streams.lock().await.len()
     }
+
+    /// Get a clone of the message sender
+    pub fn sender(&self) -> mpsc::Sender<TunnelMessage> {
+        self.sender.clone()
+    }
 }

@@ -7,6 +7,7 @@
 //! - Hibernation support for zero-cost idle connections
 
 use worker::*;
+use worker::wasm_bindgen::JsCast;
 use zks_tunnel_proto::{TunnelMessage, StreamId};
 use std::collections::HashMap;
 use std::cell::RefCell;
@@ -149,6 +150,31 @@ impl TunnelSession {
                 // Unexpected - client shouldn't send errors
                 console_warn!("[TunnelSession] Received unexpected ErrorReply from client");
             }
+            TunnelMessage::DnsQuery { request_id, query } => {
+                console_log!("[TunnelSession] DNS query request_id={} len={}", request_id, query.len());
+                self.handle_dns_query(ws, request_id, &query).await?;
+            }
+            TunnelMessage::DnsResponse { .. } => {
+                // Unexpected - worker sends responses, not client
+                console_warn!("[TunnelSession] Received unexpected DnsResponse from client");
+            }
+            TunnelMessage::UdpDatagram { request_id, host, port, payload } => {
+                console_log!("[TunnelSession] UDP datagram request_id={} to {}:{} len={}", 
+                    request_id, host, port, payload.len());
+                // Note: Workers don't have raw UDP socket support
+                // For DNS (port 53), we redirect to DoH
+                if port == 53 {
+                    self.handle_dns_query(ws, request_id, &payload).await?;
+                } else {
+                    // Other UDP traffic - send error as Workers can't relay raw UDP
+                    let error_msg = TunnelMessage::ErrorReply {
+                        stream_id: request_id,
+                        code: 501,
+                        message: "UDP not supported (except DNS via DoH)".to_string(),
+                    };
+                    let _ = ws.send_with_bytes(&error_msg.encode());
+                }
+            }
         }
 
         Ok(())
@@ -263,6 +289,103 @@ impl TunnelSession {
             console_log!("[TunnelSession] CLOSE stream={} (not found)", stream_id);
         }
         Ok(())
+    }
+
+    /// Handle DNS query via DoH (DNS-over-HTTPS)
+    /// Uses Cloudflare's 1.1.1.1 DoH service
+    async fn handle_dns_query(&self, ws: &WebSocket, request_id: u32, query: &[u8]) -> Result<()> {
+        // Use resolve_dns_via_doh which uses web_sys fetch directly
+        let response = self.resolve_dns_via_doh(query).await;
+        
+        match response {
+            Ok(dns_response) => {
+                let msg = TunnelMessage::DnsResponse {
+                    request_id,
+                    response: bytes::Bytes::from(dns_response),
+                };
+                let _ = ws.send_with_bytes(&msg.encode());
+                console_log!("[TunnelSession] DNS response sent for request_id={}", request_id);
+            }
+            Err(e) => {
+                console_error!("[TunnelSession] DoH resolution failed: {:?}", e);
+                // Send error reply
+                let error_msg = TunnelMessage::ErrorReply {
+                    stream_id: request_id,
+                    code: 503,
+                    message: format!("DNS resolution failed: {:?}", e),
+                };
+                let _ = ws.send_with_bytes(&error_msg.encode());
+            }
+        }
+        
+        Ok(())
+    }
+
+    /// Resolve DNS query via DoH using native fetch
+    async fn resolve_dns_via_doh(&self, query: &[u8]) -> Result<Vec<u8>> {
+        use worker::wasm_bindgen::JsValue;
+        use worker::js_sys::{ArrayBuffer, Uint8Array};
+        
+        // Cloudflare DoH endpoint
+        let url = "https://1.1.1.1/dns-query";
+        
+        // Create the request using web_sys
+        let opts = web_sys::RequestInit::new();
+        opts.set_method("POST");
+        
+        // Set body as ArrayBuffer
+        let body_array = Uint8Array::new_with_length(query.len() as u32);
+        body_array.copy_from(query);
+        opts.set_body(&body_array.buffer());
+        
+        // Create headers
+        let headers = web_sys::Headers::new().map_err(|_| Error::from("Headers creation failed"))?;
+        headers.set("Content-Type", "application/dns-message").map_err(|_| Error::from("Set header failed"))?;
+        headers.set("Accept", "application/dns-message").map_err(|_| Error::from("Set header failed"))?;
+        opts.set_headers(&headers);
+        
+        // Create request
+        let request = web_sys::Request::new_with_str_and_init(url, &opts)
+            .map_err(|_| Error::from("Request creation failed"))?;
+        
+        // Use worker's Fetch
+        let global = worker::js_sys::global();
+        let fetch_fn = worker::js_sys::Reflect::get(&global, &JsValue::from_str("fetch"))
+            .map_err(|_| Error::from("fetch not found"))?;
+        
+        // Call fetch
+        let fetch_fn = fetch_fn.dyn_into::<worker::js_sys::Function>()
+            .map_err(|_| Error::from("fetch is not a function"))?;
+        
+        let promise = fetch_fn.call1(&JsValue::NULL, &request)
+            .map_err(|_| Error::from("fetch call failed"))?;
+        
+        let promise = worker::js_sys::Promise::from(promise);
+        let future = wasm_bindgen_futures::JsFuture::from(promise);
+        
+        let response = future.await.map_err(|e| Error::from(format!("fetch failed: {:?}", e)))?;
+        let response: web_sys::Response = response.dyn_into()
+            .map_err(|_| Error::from("response cast failed"))?;
+        
+        if !response.ok() {
+            return Err(Error::from(format!("DoH returned status {}", response.status())));
+        }
+        
+        // Get response body as ArrayBuffer
+        let body_promise = response.array_buffer()
+            .map_err(|_| Error::from("array_buffer() failed"))?;
+        
+        let body_future = wasm_bindgen_futures::JsFuture::from(body_promise);
+        let body = body_future.await.map_err(|_| Error::from("body await failed"))?;
+        
+        let array_buffer: ArrayBuffer = body.dyn_into()
+            .map_err(|_| Error::from("body cast failed"))?;
+        
+        let uint8_array = Uint8Array::new(&array_buffer);
+        let mut vec = vec![0u8; uint8_array.length() as usize];
+        uint8_array.copy_to(&mut vec);
+        
+        Ok(vec)
     }
 }
 
