@@ -7,7 +7,7 @@
 
 ## 🚀 What is ZKS-Tunnel?
 
-ZKS-Tunnel is a revolutionary **system-wide VPN** that runs entirely on **Cloudflare Workers** (free tier) with **Zero-Knowledge Security** encryption. No servers to rent, no monthly fees, no trust required.
+ZKS-Tunnel is a revolutionary **system-wide VPN** that runs entirely on **Cloudflare Workers** (free tier) with **Zero-Knowledge Swarm** encryption. No servers to rent, no monthly fees, no trust required.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -181,7 +181,7 @@ MIT License - Free to use, modify, and distribute.
 
 ## 🙏 Credits
 
-Created by **Md. Wasif Faisal** as part of the ZKS (Zero-Knowledge Security) project.
+Created by **Md. Wasif Faisal** as part of the ZKS (Zero-Knowledge Swarm) project.
 
 ### Key Technologies
 - **Rust** - Memory-safe systems programming

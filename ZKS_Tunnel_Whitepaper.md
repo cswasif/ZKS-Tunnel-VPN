@@ -25,7 +25,7 @@ Traditional Serverless functions are ephemeral and HTTP-based. They cannot accep
 4.  **Worker** opens a raw TCP socket to the target.
 5.  **Worker** pipes data bi-directionally between the WebSocket and the TCP socket.
 
-All traffic inside the WebSocket is encrypted with **ZKS (Zero-Knowledge Security)**, ensuring that even the TLS termination point (Cloudflare) sees only encrypted noise.
+All traffic inside the WebSocket is encrypted with **ZKS (Zero-Knowledge Swarm)**, ensuring that even the TLS termination point (Cloudflare) sees only encrypted noise.
 
 ---
 
@@ -107,7 +107,7 @@ The tunnel uses a binary protocol inside the WebSocket frames.
 
 ### 5.1 Double-Layer Encryption
 1.  **Outer Layer**: TLS 1.3 (HTTPS/WSS) provided by Cloudflare. Protects against ISP snooping.
-2.  **Inner Layer**: ZKS (Zero-Knowledge Security).
+2.  **Inner Layer**: ZKS (Zero-Knowledge Swarm).
     *   **Text/Control**: Double-Key Vernam (Local CSPRNG + Remote LavaRand).
     *   **Data Stream**: High-performance Stream Cipher (ChaCha20-Poly1305 or ZKS-Stream).
 

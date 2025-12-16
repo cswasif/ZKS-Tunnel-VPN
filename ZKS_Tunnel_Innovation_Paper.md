@@ -11,7 +11,7 @@
 
 ## Abstract
 
-This paper introduces **ZKS-Tunnel**, a novel system architecture that enables Virtual Private Network (VPN) functionality entirely on serverless edge computing infrastructure, eliminating the need for dedicated Virtual Private Servers (VPS). The system combines Zero-Knowledge Security (ZKS) double-key Vernam cipher encryption with the TCP socket capabilities of edge workers and peer-to-peer WebRTC relay networks to achieve full VPN feature parity—including TCP tunneling, UDP support, and inbound connection handling—at zero operational cost.
+This paper introduces **ZKS-Tunnel**, a novel system architecture that enables Virtual Private Network (VPN) functionality entirely on serverless edge computing infrastructure, eliminating the need for dedicated Virtual Private Servers (VPS). The system combines Zero-Knowledge Swarm (ZKS) double-key Vernam cipher encryption with the TCP socket capabilities of edge workers and peer-to-peer WebRTC relay networks to achieve full VPN feature parity—including TCP tunneling, UDP support, and inbound connection handling—at zero operational cost.
 
 ---
 
@@ -42,7 +42,7 @@ Traditional VPN solutions require:
 
 ## 3. Novel Contributions
 
-### 3.1 Zero-Knowledge Security (ZKS) Encryption
+### 3.1 Zero-Knowledge Swarm (ZKS) Encryption
 
 ZKS implements a **double-key Vernam cipher** (One-Time Pad) that provides information-theoretic security:
 
