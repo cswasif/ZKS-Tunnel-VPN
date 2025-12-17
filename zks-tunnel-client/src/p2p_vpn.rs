@@ -174,7 +174,10 @@ mod implementation {
                 let mut state = self.state.lock().await;
                 *state = P2PVpnState::WaitingForExitPeer;
             }
-            info!("⏳ Waiting for Exit Peer to connect to room '{}'...", self.config.room_id);
+            info!(
+                "⏳ Waiting for Exit Peer to connect to room '{}'...",
+                self.config.room_id
+            );
 
             // Wait for peer_join message (Exit Peer connected)
             // In a real implementation, we'd have a more robust handshake
@@ -246,10 +249,7 @@ mod implementation {
                             code,
                             message,
                         } => {
-                            warn!(
-                                "Stream {} error: {} (code {})",
-                                stream_id, message, code
-                            );
+                            warn!("Stream {} error: {} (code {})", stream_id, message, code);
                             let mut streams_guard = streams.write().await;
                             streams_guard.remove(&stream_id);
                         }
@@ -716,13 +716,7 @@ mod implementation {
             {
                 // Delete our rules
                 let _ = Command::new("netsh")
-                    .args([
-                        "advfirewall",
-                        "firewall",
-                        "delete",
-                        "rule",
-                        "name=ZKS-VPN",
-                    ])
+                    .args(["advfirewall", "firewall", "delete", "rule", "name=ZKS-VPN"])
                     .output()?;
 
                 let _ = Command::new("netsh")

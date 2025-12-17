@@ -28,6 +28,7 @@ static CHAIN_ID_COUNTER: AtomicU32 = AtomicU32::new(1);
 
 /// Configuration for a single hop in the chain
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct HopConfig {
     /// Relay URL for this hop (e.g., wss://relay.workers.dev)
     pub relay_url: String,
@@ -39,6 +40,7 @@ pub struct HopConfig {
 
 /// Multi-hop chain configuration
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ChainConfig {
     /// Ordered list of hops (first = entry, last = exit)
     pub hops: Vec<HopConfig>,
@@ -77,6 +79,7 @@ impl Default for ChainConfig {
 }
 
 /// Encryption context for a single hop
+#[allow(dead_code)]
 pub struct HopContext {
     /// Local key (CSPRNG)
     pub local_key: Vec<u8>,
@@ -126,6 +129,7 @@ impl HopContext {
 }
 
 /// Chain builder for multi-hop encryption
+#[allow(dead_code)]
 pub struct ChainBuilder {
     /// Chain configuration
     config: ChainConfig,
@@ -135,6 +139,7 @@ pub struct ChainBuilder {
     chain_id: u32,
 }
 
+#[allow(dead_code)]
 impl ChainBuilder {
     /// Create a new chain builder
     pub fn new(config: ChainConfig) -> Self {
@@ -231,8 +236,7 @@ impl ChainBuilder {
             return None;
         }
 
-        let next_room =
-            String::from_utf8(decrypted[2..2 + room_len].to_vec()).ok()?;
+        let next_room = String::from_utf8(decrypted[2..2 + room_len].to_vec()).ok()?;
 
         let payload_len_start = 2 + room_len;
         let payload_len = u32::from_be_bytes([
@@ -247,7 +251,8 @@ impl ChainBuilder {
             return None;
         }
 
-        let payload = Bytes::copy_from_slice(&decrypted[payload_start..payload_start + payload_len]);
+        let payload =
+            Bytes::copy_from_slice(&decrypted[payload_start..payload_start + payload_len]);
 
         Some((next_room, payload))
     }

@@ -78,4 +78,3 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 
     Response::error("Not Found. Use /room/<room_id> or /entropy", 404)
 }
-

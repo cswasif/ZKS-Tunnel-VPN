@@ -271,11 +271,7 @@ impl EntropyPool {
     }
 
     /// Generate entropy by XORing N random peer contributions
-    async fn generate_entropy(
-        &self,
-        size: usize,
-        n: usize,
-    ) -> Result<(Vec<u8>, usize)> {
+    async fn generate_entropy(&self, size: usize, n: usize) -> Result<(Vec<u8>, usize)> {
         let contributions = self.get_all_contributions().await?;
 
         if contributions.is_empty() {
