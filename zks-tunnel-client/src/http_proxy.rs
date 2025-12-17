@@ -183,15 +183,20 @@ where
     };
 
     tunnel.send_message(msg)?;
+    debug!(
+        "Sent HttpRequest for stream {}, waiting for response...",
+        stream_id
+    );
 
-    // Wait for HttpResponse
-    match rx.recv().await {
-        Some(TunnelMessage::HttpResponse {
+    // Wait for HttpResponse with timeout
+    let timeout_duration = std::time::Duration::from_secs(30);
+    match tokio::time::timeout(timeout_duration, rx.recv()).await {
+        Ok(Some(TunnelMessage::HttpResponse {
             status,
             headers: resp_headers,
             body,
             ..
-        }) => {
+        })) => {
             // Write HTTP response to client
             let status_text = match status {
                 200 => "OK",
@@ -221,7 +226,8 @@ where
             writer.write_all(&body).await?;
             writer.flush().await?;
         }
-        Some(TunnelMessage::ErrorReply { message, .. }) => {
+        Ok(Some(TunnelMessage::ErrorReply { message, .. })) => {
+            error!("Worker returned error: {}", message);
             writer
                 .write_all(
                     format!(
@@ -232,9 +238,16 @@ where
                 )
                 .await?;
         }
-        _ => {
+        Ok(_) => {
+            error!("No response received from tunnel");
             writer
                 .write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\nNo response from tunnel")
+                .await?;
+        }
+        Err(_) => {
+            error!("Timeout waiting for HttpResponse");
+            writer
+                .write_all(b"HTTP/1.1 504 Gateway Timeout\r\n\r\nRequest timed out")
                 .await?;
         }
     }
