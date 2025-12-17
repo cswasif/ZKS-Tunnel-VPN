@@ -25,7 +25,7 @@ mod implementation {
     use bytes::Bytes;
     use futures::{SinkExt, StreamExt};
     use std::collections::HashMap;
-    use std::net::Ipv4Addr;
+    use std::net::{Ipv4Addr, SocketAddr};
     use std::process::Command;
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::Arc;
@@ -114,7 +114,8 @@ mod implementation {
         http_client: Client,
         next_stream_id: Arc<AtomicU32>,
         streams: Arc<RwLock<HashMap<StreamId, StreamState>>>,
-        dns_pending: Arc<RwLock<HashMap<u32, oneshot::Sender<Vec<u8>>>>>,
+        dns_pending: Arc<RwLock<HashMap<u32, SocketAddr>>>,
+        dns_response_tx: Arc<RwLock<Option<mpsc::Sender<(Vec<u8>, SocketAddr)>>>>,
         #[cfg(target_os = "windows")]
         original_fw_policy: Arc<Mutex<Option<String>>>,
     }
@@ -135,6 +136,7 @@ mod implementation {
                 next_stream_id: Arc::new(AtomicU32::new(1)),
                 streams: Arc::new(RwLock::new(HashMap::new())),
                 dns_pending: Arc::new(RwLock::new(HashMap::new())),
+                dns_response_tx: Arc::new(RwLock::new(None)),
                 #[cfg(target_os = "windows")]
                 original_fw_policy: Arc::new(Mutex::new(None)),
             }
@@ -202,9 +204,10 @@ mod implementation {
             let running = self.running.clone();
 
             let dns_pending = self.dns_pending.clone();
+            let dns_response_tx = self.dns_response_tx.clone();
 
             tokio::spawn(async move {
-                Self::handle_relay_messages(relay_clone, streams, dns_pending, stats, running).await;
+                Self::handle_relay_messages(relay_clone, streams, dns_pending, dns_response_tx, stats, running).await;
             });
 
             // Create TUN device and start packet processing
@@ -224,7 +227,8 @@ mod implementation {
         async fn handle_relay_messages(
             relay: Arc<P2PRelay>,
             streams: Arc<RwLock<HashMap<StreamId, StreamState>>>,
-            dns_pending: Arc<RwLock<HashMap<u32, oneshot::Sender<Vec<u8>>>>>,
+            dns_pending: Arc<RwLock<HashMap<u32, SocketAddr>>>,
+            dns_response_tx: Arc<RwLock<Option<mpsc::Sender<(Vec<u8>, SocketAddr)>>>>,
             stats: Arc<Mutex<P2PVpnStats>>,
             running: Arc<AtomicBool>,
         ) {
@@ -269,8 +273,11 @@ mod implementation {
                             );
                             // Handle DNS response - route to appropriate handler
                             let mut pending = dns_pending.write().await;
-                            if let Some(tx) = pending.remove(&request_id) {
-                                let _ = tx.send(response);
+                            if let Some(src_addr) = pending.remove(&request_id) {
+                                let tx_lock = dns_response_tx.read().await;
+                                if let Some(tx) = tx_lock.as_ref() {
+                                    let _ = tx.send((response.to_vec(), src_addr)).await;
+                                }
                             } else {
                                 warn!("Received DNS response for unknown request {}", request_id);
                             }
@@ -586,26 +593,64 @@ mod implementation {
             });
 
             // Spawn UDP handler (DNS protection)
+            // Create DNS response channel
+            let (dns_tx, mut dns_rx) = mpsc::channel(100);
+            {
+                let mut tx_guard = self.dns_response_tx.write().await;
+                *tx_guard = Some(dns_tx);
+            }
+
+            // Spawn UDP handler (DNS protection)
             let relay_for_udp = relay.clone();
+            let dns_pending = self.dns_pending.clone();
+
             let udp_task = tokio::spawn(async move {
                 if dns_protection {
                     info!("DNS protection enabled via DoH");
-                    // TODO: Implement DNS-over-HTTPS forwarding
-                    let _http = http_client;
-                    let _relay = relay_for_udp;
                 }
 
                 let mut buf = [0u8; 2048];
                 while running_udp.load(Ordering::SeqCst) {
-                    // Drain UDP packets to prevent buffer fill-up
-                    // In a full implementation, we would parse the destination and forward
-                    if let Ok(Ok((len, src_addr))) = tokio::time::timeout(
-                        tokio::time::Duration::from_secs(1),
-                        udp_socket.recv_from(&mut buf),
-                    )
-                    .await
-                    {
-                        debug!("Received UDP packet from {} ({} bytes) - dropping", src_addr, len);
+                    tokio::select! {
+                        _ = tokio::time::sleep(tokio::time::Duration::from_secs(1)) => {
+                            // Tick to check running state
+                        }
+                        res = udp_socket.recv_from(&mut buf) => {
+                            if let Ok((len, src_addr)) = res {
+                                let packet_data = &buf[..len];
+                                // Try to parse as DNS
+                                if let Ok(packet) = simple_dns::Packet::parse(packet_data) {
+                                    let request_id = packet.id();
+                                    
+                                    // Store pending
+                                    {
+                                        let mut pending = dns_pending.write().await;
+                                        pending.insert(request_id as u32, src_addr);
+                                    }
+                                    
+                                    // Send to relay
+                                    let msg = TunnelMessage::DnsQuery {
+                                        request_id: request_id as u32,
+                                        query: Bytes::copy_from_slice(packet_data),
+                                    };
+                                    
+                                    if let Err(e) = relay_for_udp.send(&msg).await {
+                                        warn!("Failed to send DNS query: {}", e);
+                                    } else {
+                                        debug!("Forwarded DNS query ID {} from {}", request_id, src_addr);
+                                    }
+                                } else {
+                                    debug!("Received non-DNS UDP packet from {} ({} bytes) - dropping", src_addr, len);
+                                }
+                            }
+                        }
+                        Some((data, addr)) = dns_rx.recv() => {
+                            if let Err(e) = udp_socket.send_to(&data, addr).await {
+                                warn!("Failed to send DNS response to {}: {}", addr, e);
+                            } else {
+                                debug!("Sent DNS response to {}", addr);
+                            }
+                        }
                     }
                 }
                 drop(udp_socket);
