@@ -24,6 +24,7 @@ struct ActiveConnection {
 }
 
 /// Exit Peer state
+#[allow(dead_code)]
 struct ExitPeerState {
     /// Active TCP connections (stream_id -> connection)
     connections: HashMap<StreamId, ActiveConnection>,

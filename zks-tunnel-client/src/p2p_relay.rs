@@ -109,6 +109,7 @@ impl ZksKeys {
 }
 
 /// P2P Relay Connection over WebSocket
+#[allow(dead_code)]
 pub struct P2PRelay {
     /// WebSocket write half
     writer: Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>>,
@@ -122,6 +123,7 @@ pub struct P2PRelay {
     pub room_id: String,
 }
 
+#[allow(dead_code)]
 impl P2PRelay {
     /// Connect to relay and establish P2P session
     pub async fn connect(
@@ -185,7 +187,7 @@ impl P2PRelay {
 
         // Send as binary
         let mut writer = self.writer.lock().await;
-        writer.send(Message::Binary(encrypted.into())).await?;
+        writer.send(Message::Binary(encrypted)).await?;
 
         Ok(())
     }
@@ -201,7 +203,7 @@ impl P2PRelay {
         };
 
         let mut writer = self.writer.lock().await;
-        writer.send(Message::Binary(encrypted.into())).await?;
+        writer.send(Message::Binary(encrypted)).await?;
 
         Ok(())
     }
