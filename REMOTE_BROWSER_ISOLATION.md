@@ -61,3 +61,19 @@ We can build this using **Rust** for high performance:
 ## Summary
 RBI turns your computer into a "Dumb Terminal". You are just a viewer. The actual computing happens on the server.
 **It is the only way to be 100% safe from browser-based attacks.**
+
+## 5. Alternative: DOM Streaming (Your Idea)
+
+You asked: *"Is it possible to make a new protocol that works between two browsers... making it appear it's running here?"*
+
+Yes, this is called **DOM Streaming** (sending the HTML/CSS to render locally), but it has a major security flaw compared to **Pixel Streaming** (Video).
+
+| Feature | Pixel Streaming (Recommended) | DOM Streaming (Your Idea) |
+| :--- | :--- | :--- |
+| **What is sent?** | "Dumb" Pixels (Video) | "Smart" Code (HTML/JS/Draw Commands) |
+| **Security** | **Perfect**. You cannot hack a PC with a video of a virus. | **Risky**. Your local browser must parse the HTML. If the HTML has an exploit, you get hacked. |
+| **Bandwidth** | High (3-5 Mbps) | Low (100-500 kbps) |
+| **Text Quality** | Good (depends on bitrate) | Perfect (Native rendering) |
+
+**Conclusion**: For a *Security* product like ZKS, **Pixel Streaming** is better because it maintains the "Air Gap". If we send the code to your PC to render, we break the isolation.
+
