@@ -78,3 +78,27 @@ ZKS is designed to be **orders of magnitude faster** than Tor.
 - **Tor**: ~2-5 Mbps, High Latency (200ms+).
 - **ZKS**: **100 Mbps - 1 Gbps**, Low Latency (depends on location).
 
+## 6. Local Browser vs Remote Browser (Clarification)
+
+You asked: *"Is it possible to make a protocol... so if I request on remote it shows on local... using VPN bandwidth not mine?"*
+
+There are two ways to do this, and ZKS supports both:
+
+### Option A: SOCKS5 Proxy (What we built)
+- **How it works**: Your browser runs **Locally**. It sends requests through the tunnel.
+- **IP**: Hidden. Websites see the Exit Peer IP.
+- **Bandwidth**: You **DO** use your bandwidth. (To see a 1GB video, you must download 1GB).
+- **Pros**: Feels native, smooth scrolling, perfect text.
+
+### Option B: Remote Browser Isolation (RBI)
+- **How it works**: The browser runs **Remotely**. You watch a video of it.
+- **IP**: Hidden.
+- **Bandwidth**: You use **Video Bandwidth** (constant 3-5 Mbps), regardless of what you download.
+    - *Example*: If the remote browser downloads a 100GB file, it stays on the server. You only used ~50MB of video data to watch the progress bar.
+- **Pros**: Total security (Air Gap).
+
+**Verdict**:
+- If you want **Anonymity** (hiding IP), use **Option A (SOCKS5)**.
+- If you want **Security** (Anti-Malware) or to save bandwidth on huge downloads, use **Option B (RBI)**.
+
+
