@@ -38,7 +38,15 @@ User -> [Relay] -> VPS 1 -> [Relay] -> VPS 2 -> Internet
 - **Protocol**: Stream video/pixels to the Client (like Stadia/GeForce Now).
 - **Result**: The "Browser" is 100% isolated from the User's PC. No cookies or malware can cross the gap.
 
-## 5. System-Wide Routing (TUN Interface)
+## 5. ZKS Browser Control Protocol (ZBCP)
+**Goal**: A custom protocol to control a remote browser with minimal bandwidth.
+- **Concept**: Instead of streaming video (heavy), we stream *commands* and *state*.
+- **Protocol**: JSON-based WebSocket protocol.
+    - Client -> Server: `{ "cmd": "click", "x": 100, "y": 200 }`
+    - Server -> Client: `{ "event": "dom_update", "rect": [...] }` (or optimized video chunks)
+- **Benefit**: Feels like a local browser (responsive) but runs remotely (secure).
+
+## 6. System-Wide Routing (TUN Interface)
 **Goal**: Finish the `vpn` mode integration with `tun-rs`.
 - Currently, `p2p-client` provides SOCKS5.
 - Next step: Connect SOCKS5 to a virtual network card so *all* apps work without configuration.
