@@ -122,8 +122,8 @@ impl KeyExchange {
             let mut hasher = Sha256::new();
 
             while key_material.len() < target_size {
-                hasher.update(&seed);
-                hasher.update(&counter.to_le_bytes());
+                hasher.update(seed);
+                hasher.update(counter.to_le_bytes());
                 let result = hasher.finalize_reset();
                 key_material.extend_from_slice(&result);
                 counter += 1;
