@@ -13,7 +13,7 @@ path = "src/main.rs"
 [features]
 default = ["socks5"]
 socks5 = []
-vpn = ["tun-rs", "netstack-smoltcp", "smoltcp", "reqwest"]
+vpn = ["tun-rs", "netstack-smoltcp", "smoltcp"]
 
 [dependencies]
 zks-tunnel-proto = { path = "../zks-tunnel-proto" }
@@ -35,8 +35,10 @@ url = "2.5"
 tun-rs = { version = "2", optional = true, features = ["async"] }
 netstack-smoltcp = { version = "0.2", optional = true }
 smoltcp = { version = "0.12", optional = true, default-features = false, features = ["std", "log", "medium-ip", "proto-ipv4", "socket-tcp", "socket-udp"] }
-reqwest = { version = "0.11", optional = true, default-features = false, features = ["rustls-tls"] }
 tokio-util = { version = "0.7.17", features = ["compat"] }
+
+# HTTP client for P2P Exit Peer and HTTP proxy mode
+reqwest = { version = "0.11", default-features = false, features = ["rustls-tls"] }
 
 [target.'cfg(windows)'.dependencies]
 # Windows-specific: Wintun driver bindings

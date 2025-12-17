@@ -19,7 +19,10 @@ use tokio::net::TcpListener;
 use tracing::{error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 
+mod exit_peer;
 mod http_proxy;
+mod p2p_client;
+mod p2p_relay;
 mod socks5;
 mod stream_manager;
 mod tunnel;
@@ -44,6 +47,12 @@ pub enum Mode {
     Http,
     /// System-wide VPN mode (all traffic)
     Vpn,
+    /// P2P Client mode - route traffic through Exit Peer
+    #[value(name = "p2p-client")]
+    P2pClient,
+    /// Exit Peer mode - forward traffic to Internet
+    #[value(name = "exit-peer")]
+    ExitPeer,
 }
 
 /// ZKS-Tunnel VPN Client
@@ -85,6 +94,21 @@ struct Args {
     #[arg(long)]
     dns_protection: bool,
 
+    /// Room ID for P2P mode (shared between Client and Exit Peer)
+    #[arg(long)]
+    room: Option<String>,
+
+    /// Relay URL for P2P mode (defaults to zks-tunnel-relay worker)
+    #[arg(
+        long,
+        default_value = "wss://zks-tunnel-relay.md-wasif-faisal.workers.dev"
+    )]
+    relay: String,
+
+    /// ZKS-Vernam key server URL (for double-key encryption)
+    #[arg(long, default_value = "https://zks-vernam.md-wasif-faisal.workers.dev")]
+    vernam: String,
+
     /// Enable verbose logging
     #[arg(short, long)]
     verbose: bool,
@@ -108,7 +132,27 @@ async fn main() -> Result<(), BoxError> {
     // Display banner
     print_banner(&args);
 
-    // Connect to Worker
+    // Handle P2P modes separately (they use relay, not tunnel worker)
+    match args.mode {
+        Mode::P2pClient => {
+            let room_id = args.room.clone().unwrap_or_else(|| {
+                error!("Room ID required for P2P mode. Use --room <id>");
+                std::process::exit(1);
+            });
+            return p2p_client::run_p2p_client(&args.relay, &args.vernam, &room_id, args.port)
+                .await;
+        }
+        Mode::ExitPeer => {
+            let room_id = args.room.clone().unwrap_or_else(|| {
+                error!("Room ID required for Exit Peer mode. Use --room <id>");
+                std::process::exit(1);
+            });
+            return exit_peer::run_exit_peer(&args.relay, &args.vernam, &room_id).await;
+        }
+        _ => {}
+    }
+
+    // For other modes, connect to Worker
     info!("Connecting to ZKS-Tunnel Worker...");
     let tunnel = TunnelClient::connect_ws(&args.worker).await.map_err(|e| {
         error!("❌ Failed to connect: {}", e);
@@ -120,6 +164,7 @@ async fn main() -> Result<(), BoxError> {
         Mode::Socks5 => run_socks5_mode(args, tunnel).await,
         Mode::Http => run_http_proxy_mode(args, tunnel).await,
         Mode::Vpn => run_vpn_mode(args, tunnel).await,
+        _ => unreachable!(),
     }
 }
 
@@ -155,6 +200,18 @@ fn print_banner(args: &Args) {
                 "║  VPN IP: {}                                          ",
                 args.vpn_address
             );
+        }
+        Mode::P2pClient => {
+            info!("║  Mode:   P2P Client (via Exit Peer)                         ║");
+            info!("║  Room:   {}  ", args.room.as_deref().unwrap_or("none"));
+            info!(
+                "║  Listen: {}:{}                                  ",
+                args.bind, args.port
+            );
+        }
+        Mode::ExitPeer => {
+            info!("║  Mode:   Exit Peer (forward to Internet)                    ║");
+            info!("║  Room:   {}  ", args.room.as_deref().unwrap_or("none"));
         }
     }
 

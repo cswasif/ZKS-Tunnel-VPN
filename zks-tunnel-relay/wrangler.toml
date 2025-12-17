@@ -1,0 +1,15 @@
+name = "zks-tunnel-relay"
+main = "build/worker/shim.mjs"
+compatibility_date = "2025-01-01"
+
+[build]
+command = "cargo install -q worker-build && worker-build --release"
+
+[durable_objects]
+bindings = [
+  { name = "VPN_ROOM", class_name = "VpnRoom" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["VpnRoom"]

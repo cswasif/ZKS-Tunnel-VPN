@@ -115,8 +115,15 @@ where
 
     // For now, try the raw TCP approach via the existing tunnel
     // This will work for non-Cloudflare sites
-    match tunnel.open_stream(&host, port).await {
-        Ok((stream_id, mut rx)) => {
+    // Add a timeout to prevent hanging
+    let connect_result = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        tunnel.open_stream(&host, port),
+    )
+    .await;
+
+    match connect_result {
+        Ok(Ok((stream_id, mut rx))) => {
             // Read remaining data from client and send through tunnel
             let mut buf = [0u8; 8192];
 
@@ -135,18 +142,39 @@ where
                         }
                     }
                     // Data from tunnel -> client
-                    Some(data) = rx.recv() => {
-                        if writer.write_all(&data).await.is_err() {
-                            break;
+                    data = rx.recv() => {
+                        match data {
+                            Some(d) => {
+                                if writer.write_all(&d).await.is_err() {
+                                    break;
+                                }
+                                let _ = writer.flush().await;
+                            }
+                            None => break,
                         }
+                    }
+                    // Timeout for no activity
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {
+                        debug!("CONNECT stream {} idle timeout", stream_id);
+                        break;
                     }
                 }
             }
 
             let _ = tunnel.close_stream(stream_id);
         }
-        Err(e) => {
-            error!("Failed to open tunnel stream: {}", e);
+        Ok(Err(e)) => {
+            error!("Failed to open tunnel stream to {}:{}: {}", host, port, e);
+            // Send error response to client
+            let _ = writer
+                .write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\nConnection failed")
+                .await;
+        }
+        Err(_) => {
+            error!("Timeout connecting to {}:{}", host, port);
+            let _ = writer
+                .write_all(b"HTTP/1.1 504 Gateway Timeout\r\n\r\nConnection timed out")
+                .await;
         }
     }
 
