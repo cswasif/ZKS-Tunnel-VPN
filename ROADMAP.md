@@ -1,19 +1,24 @@
 # ZKS-VPN Future Roadmap
 
-## 1. ZKS Onion Routing (Multi-Hop)
-**Goal**: True anonymity by chaining peers (Tor-like architecture).
+## 1. ZKS Triple-Blind Architecture (Priority #1)
+**Goal**: The "Ultimate Security Model" where no single node knows the full path.
+**Status**: **Feasible & High Priority**.
+
+### Why Rust makes this "Blazing Fast":
+- **Zero-Cost Abstractions**: We can swap "TCP Socket" for "ZKS Socket" with 0% CPU overhead.
+- **XOR Encryption**: The Vernam cipher is the fastest encryption possible (faster than AES).
+- **Async I/O**: Rust's Tokio engine handles thousands of concurrent chains without slowing down.
 
 ### Architecture
 ```
-User -> [Relay] -> Peer A -> [Relay] -> Peer B -> Internet
+User -> [Relay] -> VPS 1 -> [Relay] -> VPS 2 -> Internet
 ```
-- **Peer A (Entry)**: Knows User IP, doesn't know Destination.
-- **Peer B (Exit)**: Knows Destination, doesn't know User IP.
+- **VPS 1**: Acts as an Exit for User, but a Client for VPS 2.
+- **No Bottleneck**: Cloudflare scales infinitely. VPS 1 and VPS 2 use full datacenter bandwidth.
 
 ### Implementation Plan
-- Add `--upstream-proxy` support to `exit-peer` mode.
-- **ZKS-over-ZKS**: Implement a mode where `exit-peer` connects to another `zks-tunnel-relay` instead of direct TCP.
-- This creates the "Triple-Blind" architecture.
+- [ ] Refactor `exit-peer` to support "Upstream ZKS Proxy".
+- [ ] Add `--chain-to <room-id>` flag.
 
 ## 2. UDP Hole Punching (Direct P2P)
 **Goal**: Bypass the Cloudflare Relay for maximum speed.
