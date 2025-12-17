@@ -46,20 +46,22 @@ impl HttpProxyServer {
 async fn handle_connection(mut stream: TcpStream, tunnel: TunnelClient) -> Result<(), BoxError> {
     let (reader, mut writer) = stream.split();
     let mut reader = BufReader::new(reader);
-    
+
     // Read the first line to determine request type
     let mut first_line = String::new();
     reader.read_line(&mut first_line).await?;
-    
+
     let parts: Vec<&str> = first_line.split_whitespace().collect();
     if parts.len() < 3 {
-        writer.write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n").await?;
+        writer
+            .write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n")
+            .await?;
         return Err("Invalid HTTP request".into());
     }
-    
+
     let method = parts[0];
     let uri = parts[1];
-    
+
     // Read remaining headers
     let mut headers = String::new();
     loop {
@@ -70,7 +72,7 @@ async fn handle_connection(mut stream: TcpStream, tunnel: TunnelClient) -> Resul
         }
         headers.push_str(&line);
     }
-    
+
     if method == "CONNECT" {
         // HTTPS CONNECT request
         handle_connect_request(&mut writer, &mut reader, uri, tunnel).await
@@ -86,7 +88,7 @@ async fn handle_connect_request<R, W>(
     reader: &mut BufReader<R>,
     uri: &str,
     tunnel: TunnelClient,
-) -> Result<(), BoxError> 
+) -> Result<(), BoxError>
 where
     R: tokio::io::AsyncRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
@@ -97,25 +99,27 @@ where
     } else {
         (uri.to_string(), 443)
     };
-    
+
     info!("HTTP CONNECT to {}:{}", host, port);
-    
+
     // Send 200 Connection Established to client
-    writer.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n").await?;
+    writer
+        .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+        .await?;
     writer.flush().await?;
-    
+
     // Now the client will send TLS handshake, which we cannot intercept.
     // For true HTTPS proxying, we'd need to MITM with certificates.
     // Instead, we inform the user that raw CONNECT doesn't work for all sites
     // and they should use the HTTP-only mode or SOCKS5 for raw TCP.
-    
+
     // For now, try the raw TCP approach via the existing tunnel
     // This will work for non-Cloudflare sites
     match tunnel.open_stream(&host, port).await {
         Ok((stream_id, mut rx)) => {
             // Read remaining data from client and send through tunnel
             let mut buf = [0u8; 8192];
-            
+
             loop {
                 tokio::select! {
                     // Data from client -> tunnel
@@ -138,14 +142,14 @@ where
                     }
                 }
             }
-            
+
             let _ = tunnel.close_stream(stream_id);
         }
         Err(e) => {
             error!("Failed to open tunnel stream: {}", e);
         }
     }
-    
+
     Ok(())
 }
 
@@ -161,14 +165,14 @@ where
     W: tokio::io::AsyncWrite + Unpin,
 {
     info!("HTTP {} {}", method, uri);
-    
+
     // For regular HTTP requests, we use the new HttpRequest message
     // which the Worker handles via fetch()
     let stream_id = tunnel.get_next_stream_id();
-    
+
     // Get the pending request receiver
     let mut rx = tunnel.register_http_request(stream_id)?;
-    
+
     // Send HttpRequest message
     let msg = TunnelMessage::HttpRequest {
         stream_id,
@@ -177,12 +181,17 @@ where
         headers: headers.to_string(),
         body: Bytes::new(),
     };
-    
+
     tunnel.send_message(msg)?;
-    
+
     // Wait for HttpResponse
     match rx.recv().await {
-        Some(TunnelMessage::HttpResponse { status, headers: resp_headers, body, .. }) => {
+        Some(TunnelMessage::HttpResponse {
+            status,
+            headers: resp_headers,
+            body,
+            ..
+        }) => {
             // Write HTTP response to client
             let status_text = match status {
                 200 => "OK",
@@ -200,21 +209,35 @@ where
                 503 => "Service Unavailable",
                 _ => "Unknown",
             };
-            
-            writer.write_all(format!("HTTP/1.1 {} {}\r\n", status, status_text).as_bytes()).await?;
+
+            writer
+                .write_all(format!("HTTP/1.1 {} {}\r\n", status, status_text).as_bytes())
+                .await?;
             writer.write_all(resp_headers.as_bytes()).await?;
-            writer.write_all(format!("Content-Length: {}\r\n", body.len()).as_bytes()).await?;
+            writer
+                .write_all(format!("Content-Length: {}\r\n", body.len()).as_bytes())
+                .await?;
             writer.write_all(b"\r\n").await?;
             writer.write_all(&body).await?;
             writer.flush().await?;
         }
         Some(TunnelMessage::ErrorReply { message, .. }) => {
-            writer.write_all(format!("HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\n\r\n{}", message).as_bytes()).await?;
+            writer
+                .write_all(
+                    format!(
+                        "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\n\r\n{}",
+                        message
+                    )
+                    .as_bytes(),
+                )
+                .await?;
         }
         _ => {
-            writer.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\nNo response from tunnel").await?;
+            writer
+                .write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\nNo response from tunnel")
+                .await?;
         }
     }
-    
+
     Ok(())
 }
