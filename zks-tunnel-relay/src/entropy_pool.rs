@@ -263,10 +263,10 @@ impl EntropyPool {
         // Use list_with_options to filter by prefix
         let options = ListOptions::new().prefix("entropy:");
         let map = storage.list_with_options(options).await?;
-        
+
         // The map is already a HashMap-like structure
         let mut contributions = Vec::new();
-        
+
         // Get keys and iterate
         let keys = map.keys();
         for key in keys {

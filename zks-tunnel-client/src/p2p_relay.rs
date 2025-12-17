@@ -39,6 +39,7 @@ pub struct ZksKeys {
     pub position: usize,
 }
 
+#[allow(dead_code)]
 impl ZksKeys {
     /// Create new ZKS keys (local only, remote fetched later)
     pub fn new_local(size: usize) -> Self {
@@ -220,10 +221,7 @@ impl P2PRelay {
         // Optionally XOR with vernam key for additional security (defense in depth)
         if !vernam_url.is_empty() {
             if let Err(e) = keys.fetch_remote_key(vernam_url).await {
-                warn!(
-                    "Failed to fetch vernam key (using shared key only): {}",
-                    e
-                );
+                warn!("Failed to fetch vernam key (using shared key only): {}", e);
             }
         }
 

@@ -43,6 +43,7 @@ pub struct KeyExchange {
     room_id: String,
 }
 
+#[allow(dead_code)]
 impl KeyExchange {
     /// Create a new key exchange context
     pub fn new(room_id: &str) -> Self {
