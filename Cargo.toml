@@ -3,6 +3,7 @@ members = [
     "zks-tunnel-worker",
     "zks-tunnel-client", 
     "zks-tunnel-proto",
+    "zks-tunnel-relay",
 ]
 resolver = "2"
 
