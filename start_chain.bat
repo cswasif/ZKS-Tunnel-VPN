@@ -21,6 +21,12 @@ if not exist zks-vpn.exe (
     pause
     exit /b
 )
+if not exist wintun.dll (
+    echo ERROR: wintun.dll not found in %CD%
+    echo Please copy it from zks-vpn-windows-x64 folder.
+    pause
+    exit /b
+)
 zks-vpn.exe --mode p2p-vpn --room triple-blind-test --proxy 127.0.0.1:9050 --relay wss://zks-tunnel-relay.md-wasif-faisal.workers.dev
 
 pause
