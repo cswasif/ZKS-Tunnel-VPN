@@ -59,3 +59,26 @@ Even with **infinite computing power** (Quantum Computers, AI), you cannot break
 *   **Trust**: You only need to trust the Exit Peer (which you own).
 
 **ZKS turns the "Cloud" (Cloudflare) into a blind courier.** They carry the briefcase, but they don't have the key to open it.
+
+## 4. The "Impossible to Track" Guarantee (Chaining)
+
+You asked: *"How does this make it impossible to track who visit what even for vps?"*
+
+The answer is **Chaining (Multi-Hop)**. If you chain two ZKS nodes (Node A -> Node B), you create **Split Knowledge**.
+
+### The Scenario
+You connect to **VPS 1** (Entry), which forwards traffic to **VPS 2** (Exit).
+
+| Node | Knows WHO (Your IP) | Knows WHAT (Website) | Why? |
+| :--- | :--- | :--- | :--- |
+| **VPS 1 (Entry)** | ✅ **YES** | ❌ **NO** | It sees your IP connecting to it, but it only sees *encrypted traffic* destined for VPS 2. It has no idea you are visiting Google. |
+| **VPS 2 (Exit)** | ❌ **NO** | ✅ **YES** | It sees the request for "google.com", but it thinks the request came from **VPS 1**. It has no idea *You* exist. |
+
+### The Result
+To track you, an adversary would need to:
+1.  Hack **VPS 1** to see who is connecting.
+2.  Hack **VPS 2** to see what is being visited.
+3.  **Correlate the timestamps** perfectly to prove that *your* connection to VPS 1 caused the request on VPS 2.
+
+If you run VPS 1 and VPS 2 in different countries (e.g., Germany and USA) with different providers, this becomes practically impossible.
+
