@@ -7,11 +7,11 @@
 ## 1. Abstract
 The ZKS-Revised Protocol is a trustless, metadata-free overlay network designed to provide stronger anonymity than Tor. It eliminates the "Direct Connection" vulnerability of onion routing by introducing **Blind Relays** and replaces trusted directory authorities with **Swarm Entropy** for key generation.
 
-## 2. Network Topology: "Faisal-Swarm"
+## 2. Network Topology: "Faisal-Swarm" (Triple-Blind Architecture)
 
 Unlike Tor, where nodes connect directly (revealing IPs to each other), ZKS uses the **Faisal-Swarm Topology**. Nodes communicate exclusively through a Blind Relay, creating a "Split Knowledge" graph.
 
-### Architecture: "Triple-Blind"
+### Architecture
 ```
 [Client] --(Encrypted Tunnel A)--> [Blind Relay] --(Encrypted Tunnel B)--> [Exit Peer]
 ```
@@ -23,7 +23,7 @@ Unlike Tor, where nodes connect directly (revealing IPs to each other), ZKS uses
 
 **Guarantee**: No single entity in the network possesses both the Source IP and the Destination Data.
 
-## 3. Encryption: "Wasif-Vernam Cipher"
+## 3. Encryption: "Wasif-Vernam Cipher" (Double-Key Vernam)
 
 Traffic is encrypted using the **Wasif-Vernam Cipher**, a distributed variant of the One-Time Pad ensuring Information-Theoretic Security.
 
