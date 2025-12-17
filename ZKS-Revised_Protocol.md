@@ -39,6 +39,9 @@ To eliminate trust in any single RNG (including Cloudflare's), $K_{Remote}$ is d
 
 ### The "Entropy Tax"
 Every active peer in the ZKS Network is required to provide a stream of random bytes to the Relay.
+*   **Implementation**: Peers MUST use a Cryptographically Secure PRNG (CSPRNG) seeded by OS entropy (e.g., Rust's `getrandom` crate).
+*   **Sources**: CPU Thermal Noise (`RDRAND`), Interrupt Timing, User Input.
+*   **Quality**: This distributed entropy is cryptographically superior to centralized solutions (like LavaRand) because it eliminates the single point of failure.
 
 ### Key Derivation Function
 When a Client initiates a session, the Relay selects $N$ random active peers ($P_1, P_2, ..., P_N$) and requests entropy chunks ($E$).
