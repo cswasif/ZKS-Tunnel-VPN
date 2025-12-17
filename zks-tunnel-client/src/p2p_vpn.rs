@@ -823,6 +823,7 @@ mod stub {
     #[allow(dead_code)]
     pub struct P2PVpnController;
 
+    #[allow(dead_code)]
     impl P2PVpnController {
         pub fn new(_config: P2PVpnConfig) -> Self {
             Self
@@ -839,4 +840,5 @@ mod stub {
 }
 
 #[cfg(not(feature = "vpn"))]
+#[allow(unused_imports)]
 pub use stub::*;

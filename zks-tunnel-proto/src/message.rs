@@ -40,6 +40,10 @@ pub enum CommandType {
     HttpRequest = 0x0B,
     /// HTTP Response (from fetch)
     HttpResponse = 0x0C,
+    /// Forward encrypted payload to next hop (multi-hop chaining)
+    ChainForward = 0x10,
+    /// Acknowledgement from next hop
+    ChainAck = 0x11,
 }
 
 impl TryFrom<u8> for CommandType {
@@ -59,6 +63,8 @@ impl TryFrom<u8> for CommandType {
             0x0A => Ok(Self::ConnectSuccess),
             0x0B => Ok(Self::HttpRequest),
             0x0C => Ok(Self::HttpResponse),
+            0x10 => Ok(Self::ChainForward),
+            0x11 => Ok(Self::ChainAck),
             _ => Err(crate::ProtoError::InvalidCommand(value)),
         }
     }
@@ -142,6 +148,25 @@ pub enum TunnelMessage {
         headers: String,
         /// Response body
         body: Bytes,
+    },
+    /// Forward encrypted payload to next hop (ZKS-over-ZKS chaining)
+    /// The payload is already encrypted for the next hop
+    ChainForward {
+        /// Chain ID for tracking multi-hop sessions
+        chain_id: u32,
+        /// Room ID of the next hop's relay
+        next_room: String,
+        /// Already-encrypted payload for the next hop
+        payload: Bytes,
+    },
+    /// Acknowledgement from a hop in the chain
+    ChainAck {
+        /// Chain ID matching the forward
+        chain_id: u32,
+        /// Success or error
+        success: bool,
+        /// Optional message
+        message: String,
     },
 }
 
@@ -265,6 +290,29 @@ impl TunnelMessage {
                 buf.put_slice(headers.as_bytes());
                 buf.put_u32(body.len() as u32);
                 buf.put_slice(body);
+            }
+            TunnelMessage::ChainForward {
+                chain_id,
+                next_room,
+                payload,
+            } => {
+                buf.put_u8(CommandType::ChainForward as u8);
+                buf.put_u32(*chain_id);
+                buf.put_u16(next_room.len() as u16);
+                buf.put_slice(next_room.as_bytes());
+                buf.put_u32(payload.len() as u32);
+                buf.put_slice(payload);
+            }
+            TunnelMessage::ChainAck {
+                chain_id,
+                success,
+                message,
+            } => {
+                buf.put_u8(CommandType::ChainAck as u8);
+                buf.put_u32(*chain_id);
+                buf.put_u8(if *success { 1 } else { 0 });
+                buf.put_u16(message.len() as u16);
+                buf.put_slice(message.as_bytes());
             }
         }
 
@@ -509,6 +557,59 @@ impl TunnelMessage {
                     status,
                     headers,
                     body,
+                })
+            }
+            CommandType::ChainForward => {
+                if cursor.remaining() < 6 {
+                    return Err(crate::ProtoError::InsufficientData);
+                }
+                let chain_id = cursor.get_u32();
+                let room_len = cursor.get_u16() as usize;
+
+                if cursor.remaining() < room_len {
+                    return Err(crate::ProtoError::InsufficientData);
+                }
+                let mut room_bytes = vec![0u8; room_len];
+                cursor.copy_to_slice(&mut room_bytes);
+                let next_room =
+                    String::from_utf8(room_bytes).map_err(|_| crate::ProtoError::InvalidUtf8)?;
+
+                if cursor.remaining() < 4 {
+                    return Err(crate::ProtoError::InsufficientData);
+                }
+                let payload_len = cursor.get_u32() as usize;
+                if cursor.remaining() < payload_len {
+                    return Err(crate::ProtoError::InsufficientData);
+                }
+                let payload =
+                    Bytes::copy_from_slice(&data[cursor.position() as usize..][..payload_len]);
+
+                Ok(TunnelMessage::ChainForward {
+                    chain_id,
+                    next_room,
+                    payload,
+                })
+            }
+            CommandType::ChainAck => {
+                if cursor.remaining() < 7 {
+                    return Err(crate::ProtoError::InsufficientData);
+                }
+                let chain_id = cursor.get_u32();
+                let success = cursor.get_u8() != 0;
+                let msg_len = cursor.get_u16() as usize;
+
+                if cursor.remaining() < msg_len {
+                    return Err(crate::ProtoError::InsufficientData);
+                }
+                let mut msg_bytes = vec![0u8; msg_len];
+                cursor.copy_to_slice(&mut msg_bytes);
+                let message =
+                    String::from_utf8(msg_bytes).map_err(|_| crate::ProtoError::InvalidUtf8)?;
+
+                Ok(TunnelMessage::ChainAck {
+                    chain_id,
+                    success,
+                    message,
                 })
             }
         }

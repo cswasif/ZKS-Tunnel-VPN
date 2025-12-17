@@ -19,6 +19,7 @@ use tokio::net::TcpListener;
 use tracing::{error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 
+mod chain;
 mod exit_peer;
 mod http_proxy;
 mod p2p_client;
@@ -334,7 +335,7 @@ async fn run_vpn_mode(_args: Args, _tunnel: TunnelClient) -> Result<(), BoxError
 }
 
 /// Run in P2P VPN mode (Triple-Blind Architecture)
-async fn run_p2p_vpn_mode(args: Args, room_id: String) -> Result<(), BoxError> {
+async fn run_p2p_vpn_mode(_args: Args, _room_id: String) -> Result<(), BoxError> {
     #[cfg(not(feature = "vpn"))]
     {
         error!("❌ VPN mode is not enabled!");
@@ -345,6 +346,10 @@ async fn run_p2p_vpn_mode(args: Args, room_id: String) -> Result<(), BoxError> {
     #[cfg(feature = "vpn")]
     {
         use p2p_vpn::{P2PVpnConfig, P2PVpnController};
+
+        // Shadow the underscore-prefixed args for use
+        let args = _args;
+        let room_id = _room_id;
 
         // Check for admin/root privileges
         check_privileges()?;
