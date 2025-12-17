@@ -140,7 +140,12 @@ impl TunnelClient {
                                         );
                                     }
                                 }
-                                TunnelMessage::HttpResponse { stream_id, status, headers, body } => {
+                                TunnelMessage::HttpResponse {
+                                    stream_id,
+                                    status,
+                                    headers,
+                                    body,
+                                } => {
                                     let mut pending = pending_http_clone.lock().await;
                                     if let Some(tx) = pending.remove(&stream_id) {
                                         // Reconstruct the message to send
@@ -348,13 +353,17 @@ impl TunnelClient {
 
     /// Get the next stream ID
     pub fn get_next_stream_id(&self) -> StreamId {
-        self.next_stream_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        self.next_stream_id
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Register a pending HTTP request and return a receiver for the response
-    pub fn register_http_request(&self, stream_id: StreamId) -> Result<mpsc::Receiver<TunnelMessage>, Box<dyn std::error::Error + Send + Sync>> {
+    pub fn register_http_request(
+        &self,
+        stream_id: StreamId,
+    ) -> Result<mpsc::Receiver<TunnelMessage>, Box<dyn std::error::Error + Send + Sync>> {
         let (tx, rx) = mpsc::channel(1);
-        
+
         // Use try_lock to avoid async in sync context
         // This might fail if lock is held, but for initialization it should be fine
         let rt = tokio::runtime::Handle::current();
@@ -362,23 +371,35 @@ impl TunnelClient {
             let mut pending = self.pending_http_requests.lock().await;
             pending.insert(stream_id, tx);
         });
-        
+
         Ok(rx)
     }
 
     /// Send a message through the tunnel
-    pub fn send_message(&self, msg: TunnelMessage) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.sender.try_send(msg).map_err(|e| format!("Failed to send message: {}", e))?;
+    pub fn send_message(
+        &self,
+        msg: TunnelMessage,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.sender
+            .try_send(msg)
+            .map_err(|e| format!("Failed to send message: {}", e))?;
         Ok(())
     }
 
     /// Send data to a stream
-    pub fn send_data(&self, stream_id: StreamId, payload: Bytes) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub fn send_data(
+        &self,
+        stream_id: StreamId,
+        payload: Bytes,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.send_message(TunnelMessage::Data { stream_id, payload })
     }
 
     /// Close a stream
-    pub fn close_stream(&self, stream_id: StreamId) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub fn close_stream(
+        &self,
+        stream_id: StreamId,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.send_message(TunnelMessage::Close { stream_id })
     }
 }

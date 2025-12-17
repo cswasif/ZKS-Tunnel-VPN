@@ -142,7 +142,8 @@ impl TunnelSession {
                 headers,
                 body,
             } => {
-                self.handle_http_request(ws, stream_id, &method, &url, &headers, &body).await?;
+                self.handle_http_request(ws, stream_id, &method, &url, &headers, &body)
+                    .await?;
             }
             _ => {}
         }
@@ -315,16 +316,21 @@ impl TunnelSession {
 
         // Set body for POST/PUT
         if !body.is_empty() && (method == "POST" || method == "PUT" || method == "PATCH") {
-            init.body = Some(wasm_bindgen::JsValue::from_str(
-                &String::from_utf8_lossy(body)
-            ));
+            init.body = Some(wasm_bindgen::JsValue::from_str(&String::from_utf8_lossy(
+                body,
+            )));
         }
 
         // Make the fetch request
         let request = match Request::new_with_init(url, &init) {
             Ok(r) => r,
             Err(e) => {
-                Self::send_error(ws, stream_id, 500, &format!("Request creation failed: {:?}", e));
+                Self::send_error(
+                    ws,
+                    stream_id,
+                    500,
+                    &format!("Request creation failed: {:?}", e),
+                );
                 return Ok(());
             }
         };
@@ -332,7 +338,7 @@ impl TunnelSession {
         match Fetch::Request(request).send().await {
             Ok(mut response) => {
                 let status = response.status_code();
-                
+
                 // Collect response headers
                 let mut resp_headers = String::new();
                 for (k, v) in response.headers().entries() {
@@ -352,7 +358,7 @@ impl TunnelSession {
                     headers: resp_headers,
                     body: body_bytes,
                 };
-                
+
                 if let Err(e) = ws.send_with_bytes(&resp_msg.encode()) {
                     console_error!("[TunnelSession] Failed to send HttpResponse: {:?}", e);
                 }
@@ -440,7 +446,7 @@ impl TunnelSession {
                     "DELETE" => Method::Delete,
                     _ => Method::Get,
                 };
-                
+
                 // TODO: Copy headers from client request
 
                 let url_parsed = match Url::parse(&url) {

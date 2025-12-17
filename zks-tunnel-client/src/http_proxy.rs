@@ -51,7 +51,7 @@ async fn handle_connection(mut stream: TcpStream, tunnel: TunnelClient) -> Resul
     let mut first_line = String::new();
     reader.read_line(&mut first_line).await?;
     
-    let parts: Vec<&str> = first_line.trim().split_whitespace().collect();
+    let parts: Vec<&str> = first_line.split_whitespace().collect();
     if parts.len() < 3 {
         writer.write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n").await?;
         return Err("Invalid HTTP request".into());

@@ -428,15 +428,15 @@ impl TunnelMessage {
                     return Err(crate::ProtoError::InsufficientData);
                 }
                 let stream_id = cursor.get_u32();
-                
+
                 let method_len = cursor.get_u16() as usize;
                 if cursor.remaining() < method_len {
                     return Err(crate::ProtoError::InsufficientData);
                 }
                 let mut method_bytes = vec![0u8; method_len];
                 cursor.copy_to_slice(&mut method_bytes);
-                let method = String::from_utf8(method_bytes)
-                    .map_err(|_| crate::ProtoError::InvalidUtf8)?;
+                let method =
+                    String::from_utf8(method_bytes).map_err(|_| crate::ProtoError::InvalidUtf8)?;
 
                 if cursor.remaining() < 2 {
                     return Err(crate::ProtoError::InsufficientData);
@@ -447,8 +447,8 @@ impl TunnelMessage {
                 }
                 let mut url_bytes = vec![0u8; url_len];
                 cursor.copy_to_slice(&mut url_bytes);
-                let url = String::from_utf8(url_bytes)
-                    .map_err(|_| crate::ProtoError::InvalidUtf8)?;
+                let url =
+                    String::from_utf8(url_bytes).map_err(|_| crate::ProtoError::InvalidUtf8)?;
 
                 if cursor.remaining() < 2 {
                     return Err(crate::ProtoError::InsufficientData);
@@ -459,8 +459,8 @@ impl TunnelMessage {
                 }
                 let mut headers_bytes = vec![0u8; headers_len];
                 cursor.copy_to_slice(&mut headers_bytes);
-                let headers = String::from_utf8(headers_bytes)
-                    .map_err(|_| crate::ProtoError::InvalidUtf8)?;
+                let headers =
+                    String::from_utf8(headers_bytes).map_err(|_| crate::ProtoError::InvalidUtf8)?;
 
                 if cursor.remaining() < 4 {
                     return Err(crate::ProtoError::InsufficientData);
@@ -469,9 +469,7 @@ impl TunnelMessage {
                 if cursor.remaining() < body_len {
                     return Err(crate::ProtoError::InsufficientData);
                 }
-                let body = Bytes::copy_from_slice(
-                    &data[cursor.position() as usize..][..body_len]
-                );
+                let body = Bytes::copy_from_slice(&data[cursor.position() as usize..][..body_len]);
 
                 Ok(TunnelMessage::HttpRequest {
                     stream_id,
@@ -487,15 +485,15 @@ impl TunnelMessage {
                 }
                 let stream_id = cursor.get_u32();
                 let status = cursor.get_u16();
-                
+
                 let headers_len = cursor.get_u16() as usize;
                 if cursor.remaining() < headers_len {
                     return Err(crate::ProtoError::InsufficientData);
                 }
                 let mut headers_bytes = vec![0u8; headers_len];
                 cursor.copy_to_slice(&mut headers_bytes);
-                let headers = String::from_utf8(headers_bytes)
-                    .map_err(|_| crate::ProtoError::InvalidUtf8)?;
+                let headers =
+                    String::from_utf8(headers_bytes).map_err(|_| crate::ProtoError::InvalidUtf8)?;
 
                 if cursor.remaining() < 4 {
                     return Err(crate::ProtoError::InsufficientData);
@@ -504,9 +502,7 @@ impl TunnelMessage {
                 if cursor.remaining() < body_len {
                     return Err(crate::ProtoError::InsufficientData);
                 }
-                let body = Bytes::copy_from_slice(
-                    &data[cursor.position() as usize..][..body_len]
-                );
+                let body = Bytes::copy_from_slice(&data[cursor.position() as usize..][..body_len]);
 
                 Ok(TunnelMessage::HttpResponse {
                     stream_id,
