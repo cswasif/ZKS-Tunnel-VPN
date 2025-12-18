@@ -205,10 +205,7 @@ mod implementation {
                 }
             }
 
-            // Spawn relay message handler
-            let relay_clone = relay.clone();
-            let streams = self.streams.clone();
-            let stats = self.stats.clone();
+
 
             // Create TUN device and start packet processing
             self.run_tun_loop(relay).await?;
