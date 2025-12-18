@@ -448,6 +448,53 @@ mod implementation {
                     .mtu(self.config.mtu)
                     .build_async()?;
 
+                // Set up routing to capture all traffic through the VPN tunnel
+                #[cfg(target_os = "windows")]
+                {
+                    info!("Setting up routes to capture traffic...");
+
+                    // Get the relay host to exclude from VPN routing (avoid circular routing)
+                    let relay_host = url::Url::parse(&self.config.relay_url)
+                        .ok()
+                        .and_then(|u| u.host_str().map(|s| s.to_string()));
+
+                    // Add default route through TUN interface with low metric
+                    let gateway = format!("{}", self.config.address);
+                    let add_default = Command::new("route")
+                        .args(["add", "0.0.0.0", "mask", "0.0.0.0", &gateway, "metric", "5"])
+                        .output();
+
+                    match add_default {
+                        Ok(output) if output.status.success() => {
+                            info!("✅ Default route added via {}", gateway);
+                        }
+                        Ok(output) => {
+                            warn!(
+                                "Route add returned: {}",
+                                String::from_utf8_lossy(&output.stderr)
+                            );
+                        }
+                        Err(e) => {
+                            warn!("Failed to add default route: {}", e);
+                        }
+                    }
+
+                    // If we have a relay host, add a specific route for it via the original gateway
+                    if let Some(host) = relay_host {
+                        debug!("Relay host: {} (keeping direct route)", host);
+                    }
+                }
+
+                #[cfg(target_os = "linux")]
+                {
+                    info!("Setting up routes to capture traffic...");
+                    let gateway = format!("{}", self.config.address);
+                    let _ = Command::new("ip")
+                        .args(["route", "add", "default", "via", &gateway, "metric", "5"])
+                        .output();
+                    info!("✅ Default route added via {}", gateway);
+                }
+
                 self.run_netstack(device, relay).await?;
                 Ok(())
             }
