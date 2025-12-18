@@ -64,6 +64,8 @@ mod implementation {
         pub room_id: String,
         /// Upstream SOCKS5 proxy
         pub proxy: Option<String>,
+        /// Exit Peer's VPN IP address (gateway for routing)
+        pub exit_peer_address: Ipv4Addr,
     }
 
     impl Default for P2PVpnConfig {
@@ -79,6 +81,7 @@ mod implementation {
                 vernam_url: String::new(),
                 room_id: String::new(),
                 proxy: None,
+                exit_peer_address: Ipv4Addr::new(10, 0, 85, 2),
             }
         }
     }
@@ -327,6 +330,27 @@ mod implementation {
                 let _ = relay.close().await;
             }
 
+            // Cleanup routes added by VPN
+            #[cfg(target_os = "windows")]
+            {
+                let exit_peer_ip = format!("{}", self.config.exit_peer_address);
+                info!("Removing VPN routes...");
+                let _ = Command::new("route")
+                    .args(["delete", "0.0.0.0", "mask", "0.0.0.0", &exit_peer_ip])
+                    .output();
+                info!("✅ VPN routes removed");
+            }
+
+            #[cfg(target_os = "linux")]
+            {
+                let gateway = format!("{}", self.config.exit_peer_address);
+                info!("Removing VPN routes...");
+                let _ = Command::new("ip")
+                    .args(["route", "del", "default", "via", &gateway])
+                    .output();
+                info!("✅ VPN routes removed");
+            }
+
             // Disable kill switch
             if self.config.kill_switch {
                 if let Err(e) = self.disable_kill_switch().await {
@@ -506,16 +530,16 @@ mod implementation {
 
                     // Don't delete existing default route - just add VPN route with lower metric
                     // Windows will prefer the route with lower metric
-                    // Route via Exit Peer's VPN IP (10.0.85.2), not our own TUN IP
+                    // Route via Exit Peer's VPN IP, not our own TUN IP
                     // This ensures packets go OUT through the TUN device to the Exit Peer
-                    let exit_peer_ip = "10.0.85.2";
+                    let exit_peer_ip = format!("{}", self.config.exit_peer_address);
                     let add_default = Command::new("route")
                         .args([
                             "add",
                             "0.0.0.0",
                             "mask",
                             "0.0.0.0",
-                            exit_peer_ip,
+                            &exit_peer_ip,
                             "metric",
                             "1",
                         ])
@@ -536,7 +560,8 @@ mod implementation {
                 #[cfg(target_os = "linux")]
                 {
                     info!("Setting up routes to capture traffic...");
-                    let gateway = format!("{}", self.config.address);
+                    // Route via Exit Peer's VPN IP, not our own TUN IP
+                    let gateway = format!("{}", self.config.exit_peer_address);
                     let _ = Command::new("ip")
                         .args(["route", "add", "default", "via", &gateway, "metric", "5"])
                         .output();
