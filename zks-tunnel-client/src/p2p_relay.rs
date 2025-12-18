@@ -39,7 +39,8 @@ pub struct ZksKeys {
     pub local_key: Vec<u8>,
     /// Remote key from zks-vernam worker (LavaRand)
     pub remote_key: Vec<u8>,
-    /// Current position in key stream
+    /// Current position in key stream (unused, kept for API compatibility)
+    #[allow(dead_code)]
     pub position: usize,
 }
 
@@ -97,10 +98,9 @@ impl ZksKeys {
     /// to ensure client and Exit Peer stay synchronized
     pub fn encrypt(&mut self, data: &[u8]) -> Vec<u8> {
         let mut encrypted = Vec::with_capacity(data.len());
-        // Reset position for each message to ensure sync between peers
-        let mut pos = 0usize;
 
-        for byte in data {
+        // Use enumerate for position - stateless per-message to ensure sync between peers
+        for (pos, byte) in data.iter().enumerate() {
             let local_byte = self
                 .local_key
                 .get(pos % self.local_key.len())
@@ -113,7 +113,6 @@ impl ZksKeys {
                 .unwrap_or(0);
 
             encrypted.push(byte ^ local_byte ^ remote_byte);
-            pos += 1;
         }
 
         encrypted
