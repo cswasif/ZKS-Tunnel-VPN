@@ -78,8 +78,17 @@ impl WasifVernam {
 
         let nonce = Nonce::from_slice(&nonce_bytes);
 
-        // Encrypt
-        let mut ciphertext = self.cipher.encrypt(nonce, data)?;
+        // 1. Double-Key Defense: XOR Plaintext with Remote Key (if available)
+        // This ensures that even if ChaCha20 key is compromised, the message is protected by Swarm Entropy.
+        let mut mixed_data = data.to_vec();
+        if !self.remote_key.is_empty() {
+            for (i, byte) in mixed_data.iter_mut().enumerate() {
+                *byte ^= self.remote_key[i % self.remote_key.len()];
+            }
+        }
+
+        // 2. Base Layer: Encrypt mixed data with ChaCha20-Poly1305
+        let mut ciphertext = self.cipher.encrypt(nonce, mixed_data.as_slice())?;
 
         // Prepend nonce to ciphertext so receiver can decrypt
         let mut result = Vec::with_capacity(12 + ciphertext.len());
@@ -101,7 +110,17 @@ impl WasifVernam {
         let ciphertext = &data[12..];
 
         // Decrypt
-        self.cipher.decrypt(nonce, ciphertext)
+        // 1. Base Layer: Decrypt with ChaCha20-Poly1305
+        let mut plaintext = self.cipher.decrypt(nonce, ciphertext)?;
+
+        // 2. Double-Key Defense: XOR with Remote Key to recover original plaintext
+        if !self.remote_key.is_empty() {
+            for (i, byte) in plaintext.iter_mut().enumerate() {
+                *byte ^= self.remote_key[i % self.remote_key.len()];
+            }
+        }
+
+        Ok(plaintext)
     }
 
     /// Fetch remote key from zks-vernam worker
@@ -170,9 +189,12 @@ impl EntropyTaxPayer {
 
         // 2. Connect to zks-key worker via WebSocket
         // Note: The worker expects a WebSocket connection for contributions
-        let ws_url = self.vernam_url.replace("https://", "wss://").replace("http://", "ws://");
+        let ws_url = self
+            .vernam_url
+            .replace("https://", "wss://")
+            .replace("http://", "ws://");
         let url = Url::parse(&format!("{}/entropy", ws_url))?;
-        
+
         let (ws_stream, _) = connect_async(url.to_string()).await?;
         let (mut write, mut read) = ws_stream.split();
 
@@ -187,11 +209,8 @@ impl EntropyTaxPayer {
 
         // 4. Wait for ACK
         if let Some(msg) = read.next().await {
-            match msg? {
-                Message::Text(text) => {
-                    debug!("Entropy Tax Paid: ACK received: {}", text);
-                }
-                _ => {}
+            if let Message::Text(text) = msg? {
+                debug!("Entropy Tax Paid: ACK received: {}", text);
             }
         }
 
@@ -284,7 +303,10 @@ impl P2PRelay {
         info!("Connected to relay (status: {})", response.status());
 
         // Split into read/write
-        let (mut writer, mut reader): (SplitSink<WebSocketStream<BoxedStream>, Message>, SplitStream<WebSocketStream<BoxedStream>>) = ws_stream.split();
+        let (mut writer, mut reader): (
+            SplitSink<WebSocketStream<BoxedStream>, Message>,
+            SplitStream<WebSocketStream<BoxedStream>>,
+        ) = ws_stream.split();
 
         // === X25519 Key Exchange ===
         info!("🔑 Initiating X25519 key exchange...");
@@ -363,7 +385,10 @@ impl P2PRelay {
             info!("Started Entropy Tax Payer (contributing randomness to Swarm)");
 
             if let Err(e) = keys.fetch_remote_key(vernam_url).await {
-                warn!("Failed to fetch initial remote key: {}. Proceeding with ChaCha20 base layer.", e);
+                warn!(
+                    "Failed to fetch initial remote key: {}. Proceeding with ChaCha20 base layer.",
+                    e
+                );
             }
         }
 
@@ -501,7 +526,10 @@ impl P2PRelay {
 
     /// Close the relay connection
     pub async fn close(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut writer: tokio::sync::MutexGuard<'_, SplitSink<WebSocketStream<BoxedStream>, Message>> = self.writer.lock().await;
+        let mut writer: tokio::sync::MutexGuard<
+            '_,
+            SplitSink<WebSocketStream<BoxedStream>, Message>,
+        > = self.writer.lock().await;
         writer.close().await?;
         Ok(())
     }
@@ -560,12 +588,15 @@ impl P2PRelay {
                 };
 
                 // Send padding (ignore errors - connection might be busy)
-                let mut writer_guard: tokio::sync::MutexGuard<'_, SplitSink<WebSocketStream<BoxedStream>, Message>> = writer.lock().await;
+                let mut writer_guard: tokio::sync::MutexGuard<
+                    '_,
+                    SplitSink<WebSocketStream<BoxedStream>, Message>,
+                > = writer.lock().await;
                 let _ = writer_guard.send(Message::Binary(encrypted)).await;
                 drop(writer_guard);
 
                 // Annotate reader with correct type (as requested, though not used in this specific loop)
-                let mut reader: tokio::sync::MutexGuard<'_, SplitStream<WebSocketStream<BoxedStream>>> = reader.lock().await;
+                let reader: tokio::sync::MutexGuard<'_, SplitStream<WebSocketStream<BoxedStream>>> = reader.lock().await;
                 drop(reader); // Drop immediately as it's not used here
 
                 // Wait for next interval
