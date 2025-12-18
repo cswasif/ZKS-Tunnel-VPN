@@ -214,18 +214,6 @@ mod implementation {
             let dns_pending = self.dns_pending.clone();
             let dns_response_tx = self.dns_response_tx.clone();
 
-            tokio::spawn(async move {
-                Self::handle_relay_messages(
-                    relay_clone,
-                    streams,
-                    dns_pending,
-                    dns_response_tx,
-                    stats,
-                    running,
-                )
-                .await;
-            });
-
             // Create TUN device and start packet processing
             self.run_tun_loop(relay).await?;
 
@@ -248,6 +236,7 @@ mod implementation {
             dns_response_tx: Arc<RwLock<Option<mpsc::Sender<(Vec<u8>, SocketAddr)>>>>,
             stats: Arc<Mutex<P2PVpnStats>>,
             running: Arc<AtomicBool>,
+            device_writer: Option<Arc<tun_rs::AsyncDevice>>,
         ) {
             while running.load(Ordering::SeqCst) {
                 match relay.recv().await {
@@ -299,6 +288,21 @@ mod implementation {
                                 warn!("Received DNS response for unknown request {}", request_id);
                             }
                         }
+                        TunnelMessage::IpPacket { payload } => {
+                            if let Some(writer) = &device_writer {
+                                debug!("Received IpPacket: {} bytes", payload.len());
+                                if let Err(e) = writer.send(&payload).await {
+                                    warn!("Failed to write to TUN: {}", e);
+                                } else {
+                                    let mut s = stats.lock().await;
+                                    s.bytes_received += payload.len() as u64;
+                                    s.packets_received += 1;
+                                }
+                            }
+                        }
+                        TunnelMessage::Ping => {
+                            let _ = relay.send(&TunnelMessage::Pong).await;
+                        }
                         _ => {
                             debug!("Received unhandled message type");
                         }
@@ -314,6 +318,8 @@ mod implementation {
                 }
             }
         }
+
+
 
         /// Stop the VPN
         pub async fn stop(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -581,6 +587,11 @@ mod implementation {
         /// Sends IP packets from TUN device as TunnelMessage::IpPacket
         /// Receives IpPacket responses and writes them back to TUN
         /// All packets are encrypted with ZKS keys (X25519 + vernam XOR)
+        /// Raw TUN packet forwarding (Layer 3 VPN mode)
+        ///
+        /// Sends IP packets from TUN device as TunnelMessage::IpPacket
+        /// Receives IpPacket responses and writes them back to TUN
+        /// All packets are encrypted with ZKS keys (X25519 + vernam XOR)
         async fn run_tun_raw(
             &self,
             device: tun_rs::AsyncDevice,
@@ -592,16 +603,36 @@ mod implementation {
             let running = self.running.clone();
             let running_clone = running.clone();
             let stats = self.stats.clone();
-            let stats_clone = stats.clone();
 
             // Wrap TUN device in Arc for sharing
             let device = Arc::new(device);
             let device_reader = device.clone();
-            let device_writer = device.clone();
+            let device_writer = device.clone(); // Used by handle_relay_messages
 
             // Clone relay for tasks
             let relay_for_send = relay.clone();
             let relay_for_recv = relay.clone();
+
+            // Spawn the unified message handler (Relay -> TUN/Streams/DNS)
+            let streams = self.streams.clone();
+            let dns_pending = self.dns_pending.clone();
+            let dns_response_tx = self.dns_response_tx.clone();
+            let stats_clone = stats.clone();
+            let running_handler = running.clone();
+            let device_writer_clone = device_writer.clone();
+
+            tokio::spawn(async move {
+                Self::handle_relay_messages(
+                    relay_for_recv,
+                    streams,
+                    dns_pending,
+                    dns_response_tx,
+                    stats_clone,
+                    running_handler,
+                    Some(device_writer_clone),
+                )
+                .await;
+            });
 
             // Task 1: TUN -> Relay (outbound packets to Exit Peer)
             let tun_to_relay = tokio::spawn(async move {
@@ -634,50 +665,11 @@ mod implementation {
                 debug!("TUN -> Relay task exiting");
             });
 
-            // Task 2: Relay -> TUN (inbound packets from Exit Peer)
-            let running_clone2 = running.clone();
-            let relay_to_tun = tokio::spawn(async move {
-                while running_clone2.load(Ordering::SeqCst) {
-                    match relay_for_recv.recv().await {
-                        Ok(Some(TunnelMessage::IpPacket { payload })) => {
-                            debug!("Received IpPacket: {} bytes", payload.len());
-
-                            // Write packet to TUN device
-                            if let Err(e) = device_writer.send(&payload).await {
-                                warn!("Failed to write to TUN: {}", e);
-                                break;
-                            }
-
-                            let mut s = stats_clone.lock().await;
-                            s.bytes_received += payload.len() as u64;
-                            s.packets_received += 1;
-                        }
-                        Ok(Some(TunnelMessage::Ping)) => {
-                            // Respond to pings
-                            let _ = relay_for_recv.send(&TunnelMessage::Pong).await;
-                        }
-                        Ok(Some(other)) => {
-                            debug!("Received non-IpPacket message: {:?}", other);
-                        }
-                        Ok(None) => {
-                            info!("Relay connection closed");
-                            break;
-                        }
-                        Err(e) => {
-                            error!("Relay recv error: {}", e);
-                            break;
-                        }
-                    }
-                }
-                debug!("Relay -> TUN task exiting");
-            });
-
             info!("✅ VPN active - all traffic is now encrypted through Exit Peer!");
 
             // Wait for tasks to complete (they exit when connection closes or error)
             tokio::select! {
                 _ = tun_to_relay => {},
-                _ = relay_to_tun => {},
             }
 
             info!("VPN forwarding stopped");
@@ -692,6 +684,28 @@ mod implementation {
             relay: Arc<P2PRelay>,
         ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             info!("Initializing userspace TCP/IP stack...");
+
+            // Spawn the unified message handler (Relay -> Streams/DNS)
+            // Note: No device_writer here because netstack handles TUN writes
+            let streams = self.streams.clone();
+            let dns_pending = self.dns_pending.clone();
+            let dns_response_tx = self.dns_response_tx.clone();
+            let stats = self.stats.clone();
+            let running = self.running.clone();
+            let relay_clone = relay.clone();
+
+            tokio::spawn(async move {
+                Self::handle_relay_messages(
+                    relay_clone,
+                    streams,
+                    dns_pending,
+                    dns_response_tx,
+                    stats,
+                    running,
+                    None, // No direct TUN writing in netstack mode
+                )
+                .await;
+            });
 
             let (stack, runner_opt, udp_socket_opt, tcp_listener_opt) = StackBuilder::default()
                 .enable_tcp(true)
