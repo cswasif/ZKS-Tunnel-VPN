@@ -204,9 +204,6 @@ mod implementation {
                     error!("Failed to enable kill switch: {}", e);
                 }
             }
-
-
-
             // Create TUN device and start packet processing
             self.run_tun_loop(relay).await?;
 
