@@ -93,23 +93,27 @@ impl ZksKeys {
 
     /// Encrypt data using double-key Vernam cipher
     /// Ciphertext = Plaintext XOR LocalKey XOR RemoteKey
+    /// Note: Encryption is stateless per-message (position resets each call)
+    /// to ensure client and Exit Peer stay synchronized
     pub fn encrypt(&mut self, data: &[u8]) -> Vec<u8> {
         let mut encrypted = Vec::with_capacity(data.len());
+        // Reset position for each message to ensure sync between peers
+        let mut pos = 0usize;
 
         for byte in data {
             let local_byte = self
                 .local_key
-                .get(self.position % self.local_key.len())
+                .get(pos % self.local_key.len())
                 .copied()
                 .unwrap_or(0);
             let remote_byte = self
                 .remote_key
-                .get(self.position % self.remote_key.len())
+                .get(pos % self.remote_key.len())
                 .copied()
                 .unwrap_or(0);
 
             encrypted.push(byte ^ local_byte ^ remote_byte);
-            self.position += 1;
+            pos += 1;
         }
 
         encrypted
