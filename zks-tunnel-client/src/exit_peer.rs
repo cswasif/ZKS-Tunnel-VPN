@@ -527,8 +527,14 @@ pub async fn run_exit_peer_vpn(
     let _tun_to_relay = tokio::spawn(async move {
         let mut buf = vec![0u8; 2048];
         while running_clone2.load(Ordering::SeqCst) {
-            match device_reader.recv(&mut buf).await {
-                Ok(n) => {
+            // Use timeout to allow checking 'running' flag periodically
+            match tokio::time::timeout(
+                tokio::time::Duration::from_secs(1),
+                device_reader.recv(&mut buf),
+            )
+            .await
+            {
+                Ok(Ok(n)) => {
                     let packet = &buf[..n];
                     debug!("TUN read: {} bytes", n);
 
@@ -540,12 +546,17 @@ pub async fn run_exit_peer_vpn(
                         warn!("Failed to send IpPacket to relay: {}", e);
                     }
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     error!("TUN read error: {}", e);
                     break;
                 }
+                Err(_) => {
+                    // Timeout - just loop to check running flag
+                    continue;
+                }
             }
         }
+        info!("Exit Peer TUN reader task stopped");
     });
 
     info!("✅ Exit Peer VPN mode active - forwarding packets");

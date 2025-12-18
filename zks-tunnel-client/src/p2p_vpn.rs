@@ -636,31 +636,38 @@ mod implementation {
             let tun_to_relay = tokio::spawn(async move {
                 let mut buf = vec![0u8; 2048];
                 while running_clone.load(Ordering::SeqCst) {
-                    match device_reader.recv(&mut buf).await {
-                        Ok(n) => {
-                            let packet = &buf[..n];
-                            debug!("TUN read: {} bytes", n);
-
-                            // Send as IpPacket message (will be ZKS-encrypted by relay.send)
+                    // Use timeout to allow checking 'running' flag periodically
+                    // otherwise recv() hangs indefinitely if no packets arrive
+                    match tokio::time::timeout(
+                        tokio::time::Duration::from_secs(1),
+                        device_reader.recv(&mut buf),
+                    )
+                    .await
+                    {
+                        Ok(Ok(n)) => {
+                            // Encrypt and send to relay
                             let msg = TunnelMessage::IpPacket {
-                                payload: Bytes::copy_from_slice(packet),
+                                payload: Bytes::copy_from_slice(&buf[..n]),
                             };
                             if let Err(e) = relay_for_send.send(&msg).await {
-                                warn!("Failed to send IpPacket: {}", e);
+                                error!("Failed to send to relay: {}", e);
                                 break;
                             }
-
                             let mut s = stats.lock().await;
                             s.bytes_sent += n as u64;
                             s.packets_sent += 1;
                         }
-                        Err(e) => {
-                            error!("TUN read error: {}", e);
+                        Ok(Err(e)) => {
+                            error!("Error reading from TUN: {}", e);
                             break;
+                        }
+                        Err(_) => {
+                            // Timeout - just loop to check running flag
+                            continue;
                         }
                     }
                 }
-                debug!("TUN -> Relay task exiting");
+                info!("TUN reader task stopped");
             });
 
             info!("✅ VPN active - all traffic is now encrypted through Exit Peer!");
