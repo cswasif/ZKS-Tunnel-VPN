@@ -271,9 +271,7 @@ impl EntropyPool {
         for key_js in map.keys().flatten() {
             // Convert JsValue to String
             if let Some(key_str) = key_js.as_string() {
-                if let Ok(Some(contribution)) =
-                    storage.get::<EntropyContribution>(&key_str).await
-                {
+                if let Ok(Some(contribution)) = storage.get::<EntropyContribution>(&key_str).await {
                     contributions.push(contribution);
                 }
             }

@@ -255,6 +255,18 @@ impl VpnRoom {
             sender.role
         );
 
+        for ws in self.state.get_websockets() {
+            if let Ok(Some(session)) = ws.deserialize_attachment::<PeerSession>() {
+                if session.role == target_role {
+                    console_log!(
+                        "[VpnRoom] ✅ Forwarding text to {:?} ({})",
+                        session.role,
+                        session.peer_id
+                    );
+                    let _ = ws.send_with_str(text);
+                    return;
+                }
+            }
         }
 
         console_log!(

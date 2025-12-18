@@ -244,8 +244,9 @@ mod implementation {
             relay: Arc<P2PRelay>,
             streams: Arc<RwLock<HashMap<StreamId, StreamState>>>,
             dns_pending: Arc<RwLock<HashMap<u32, SocketAddr>>>,
-            #[allow(clippy::type_complexity)]
-            dns_response_tx: Arc<RwLock<Option<mpsc::Sender<(Vec<u8>, SocketAddr)>>>>,
+            #[allow(clippy::type_complexity)] dns_response_tx: Arc<
+                RwLock<Option<mpsc::Sender<(Vec<u8>, SocketAddr)>>>,
+            >,
             stats: Arc<Mutex<P2PVpnStats>>,
             running: Arc<AtomicBool>,
         ) {
@@ -533,14 +534,7 @@ mod implementation {
 
                     // Route 128.0.0.0/1 (second half of internet) through TUN
                     let _add_route2 = Command::new("route")
-                        .args([
-                            "128.0.0.0",
-                            "mask",
-                            "128.0.0.0",
-                            &tun_ip,
-                            "metric",
-                            "1",
-                        ])
+                        .args(["128.0.0.0", "mask", "128.0.0.0", &tun_ip, "metric", "1"])
                         .output();
 
                     match (add_route1, _add_route2) {
