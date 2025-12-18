@@ -509,22 +509,17 @@ mod implementation {
                     // Add default route via TUN with low metric (overrides existing default)
                     let tun_ip = format!("{}", self.config.address);
                     let add_default = Command::new("route")
-                        .args([
-                            "add",
-                            "0.0.0.0",
-                            "mask",
-                            "0.0.0.0",
-                            &tun_ip,
-                            "metric",
-                            "1",
-                        ])
+                        .args(["add", "0.0.0.0", "mask", "0.0.0.0", &tun_ip, "metric", "1"])
                         .output();
                     match add_default {
                         Ok(r) if r.status.success() => {
                             info!("✅ Default route added via {} (metric 1)", tun_ip);
                         }
                         _ => {
-                            warn!("Failed to add default route via TUN. Output: {:?}", add_default);
+                            warn!(
+                                "Failed to add default route via TUN. Output: {:?}",
+                                add_default
+                            );
                         }
                     }
                 }
