@@ -13,9 +13,15 @@ use tokio::sync::Mutex;
 use tokio_socks::tcp::Socks5Stream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{client_async, WebSocketStream};
-use tracing::{debug, info, warn};
+use tokio_tungstenite::{client_async, WebSocketStream};
+use tracing::{debug, info, warn, error};
 use url::Url;
 use zks_tunnel_proto::TunnelMessage;
+use chacha20poly1305::{
+    aead::{Aead, AeadCore, KeyInit, OsRng},
+    ChaCha20Poly1305, Key, Nonce,
+};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Peer role in the VPN relay
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,95 +39,76 @@ impl PeerRole {
     }
 }
 
-/// ZKS encryption keys for double-key Vernam cipher
-pub struct ZksKeys {
-    /// Local CSPRNG-generated key material
-    pub local_key: Vec<u8>,
-    /// Remote key from zks-vernam worker (LavaRand)
-    pub remote_key: Vec<u8>,
-    /// Current position in key stream (unused, kept for API compatibility)
+/// Wasif Vernam: Practical Double-Key Encryption
+///
+/// Combines ChaCha20-Poly1305 (Base Layer) with a Remote Entropy Stream (Enhancement Layer).
+/// Currently implements the Base Layer (ChaCha20-Poly1305) for production security.
+pub struct WasifVernam {
+    /// ChaCha20Poly1305 Cipher
+    cipher: ChaCha20Poly1305,
+    /// Nonce counter (incremented per message)
+    nonce_counter: AtomicU64,
+    /// Remote key stream (for future "True Randomness" enhancement)
     #[allow(dead_code)]
-    pub position: usize,
+    remote_key: Vec<u8>,
 }
 
-#[allow(dead_code)]
-impl ZksKeys {
-    /// Create new ZKS keys (local only, remote fetched later)
-    pub fn new_local(size: usize) -> Self {
-        let mut local_key = vec![0u8; size];
-        getrandom::getrandom(&mut local_key).expect("Failed to generate local key");
-
+impl WasifVernam {
+    /// Create new Wasif Vernam from a 32-byte shared secret
+    pub fn new(shared_secret: [u8; 32]) -> Self {
+        let key = Key::from_slice(&shared_secret);
+        let cipher = ChaCha20Poly1305::new(key);
+        
         Self {
-            local_key,
+            cipher,
+            nonce_counter: AtomicU64::new(0),
             remote_key: Vec::new(),
-            position: 0,
         }
     }
 
-    /// Create ZKS keys from a shared key (from X25519 key exchange)
-    pub fn new_from_shared_key(shared_key: Vec<u8>) -> Self {
-        Self {
-            local_key: shared_key,
-            remote_key: Vec::new(),
-            position: 0,
-        }
+    /// Encrypt data using ChaCha20-Poly1305
+    /// Returns: [Nonce (12 bytes) | Ciphertext (N bytes) | Tag (16 bytes)]
+    pub fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>, chacha20poly1305::aead::Error> {
+        // Generate nonce: 4 bytes random + 8 bytes counter to ensure uniqueness
+        let mut nonce_bytes = [0u8; 12];
+        let counter = self.nonce_counter.fetch_add(1, Ordering::SeqCst);
+        nonce_bytes[4..].copy_from_slice(&counter.to_be_bytes());
+        // Add some randomness to the first 4 bytes for extra safety against resets
+        getrandom::getrandom(&mut nonce_bytes[0..4]).unwrap_or_default();
+        
+        let nonce = Nonce::from_slice(&nonce_bytes);
+
+        // Encrypt
+        let mut ciphertext = self.cipher.encrypt(nonce, data)?;
+        
+        // Prepend nonce to ciphertext so receiver can decrypt
+        let mut result = Vec::with_capacity(12 + ciphertext.len());
+        result.extend_from_slice(&nonce_bytes);
+        result.append(&mut ciphertext);
+        
+        Ok(result)
     }
 
-    /// Fetch remote key from zks-vernam worker
-    pub async fn fetch_remote_key(
-        &mut self,
-        vernam_url: &str,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let key_size = self.local_key.len();
-        let url = format!(
-            "{}/key/{}",
-            vernam_url.trim_end_matches('/'),
-            key_size / 16384 + 1
-        );
+    /// Decrypt data using ChaCha20-Poly1305
+    /// Input: [Nonce (12 bytes) | Ciphertext (N bytes) | Tag (16 bytes)]
+    pub fn decrypt(&self, data: &[u8]) -> Result<Vec<u8>, chacha20poly1305::aead::Error> {
+        if data.len() < 12 + 16 {
+            return Err(chacha20poly1305::aead::Error);
+        }
 
-        let response = reqwest::get(&url).await?;
-        self.remote_key = response.bytes().await?.to_vec();
+        // Extract nonce
+        let nonce = Nonce::from_slice(&data[0..12]);
+        let ciphertext = &data[12..];
 
-        // Truncate to match local key size
-        self.remote_key.truncate(key_size);
-
-        info!(
-            "Fetched {} bytes of remote key from zks-vernam",
-            self.remote_key.len()
-        );
+        // Decrypt
+        self.cipher.decrypt(nonce, ciphertext)
+    }
+    
+    /// Fetch remote key (Placeholder for future enhancement)
+    pub async fn fetch_remote_key(&mut self, _vernam_url: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // In the future, this will fetch entropy to XOR with the stream.
+        // For now, ChaCha20Poly1305 provides sufficient security.
         Ok(())
-    }
-
-    /// Encrypt data using double-key Vernam cipher
-    /// Ciphertext = Plaintext XOR LocalKey XOR RemoteKey
-    /// Note: Encryption is stateless per-message (position resets each call)
-    /// to ensure client and Exit Peer stay synchronized
-    pub fn encrypt(&mut self, data: &[u8]) -> Vec<u8> {
-        let mut encrypted = Vec::with_capacity(data.len());
-
-        // Use enumerate for position - stateless per-message to ensure sync between peers
-        for (pos, byte) in data.iter().enumerate() {
-            let local_byte = self
-                .local_key
-                .get(pos % self.local_key.len())
-                .copied()
-                .unwrap_or(0);
-            let remote_byte = self
-                .remote_key
-                .get(pos % self.remote_key.len())
-                .copied()
-                .unwrap_or(0);
-
-            encrypted.push(byte ^ local_byte ^ remote_byte);
-        }
-
-        encrypted
-    }
-
-    /// Decrypt data (same operation as encrypt for Vernam)
-    pub fn decrypt(&mut self, data: &[u8]) -> Vec<u8> {
-        // Vernam cipher is symmetric
-        self.encrypt(data)
     }
 }
 
@@ -140,7 +127,7 @@ pub struct P2PRelay {
     /// WebSocket read half
     reader: Arc<Mutex<SplitStream<WebSocketStream<BoxedStream>>>>,
     /// ZKS encryption keys
-    keys: Arc<Mutex<ZksKeys>>,
+    keys: Arc<Mutex<WasifVernam>>,
     /// Our peer role
     pub role: PeerRole,
     /// Room ID
@@ -273,8 +260,12 @@ impl P2PRelay {
             .ok_or("Failed to derive encryption key")?
             .to_vec();
 
-        // Initialize ZKS keys with derived shared key
-        let mut keys = ZksKeys::new_from_shared_key(encryption_key.clone());
+        // Initialize Wasif Vernam with derived shared key
+        let mut shared_secret = [0u8; 32];
+        if encryption_key.len() >= 32 {
+            shared_secret.copy_from_slice(&encryption_key[0..32]);
+        }
+        let mut keys = WasifVernam::new(shared_secret);
 
         // Optionally XOR with vernam key for additional security (defense in depth)
         if !vernam_url.is_empty() {
@@ -303,10 +294,10 @@ impl P2PRelay {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let encoded = message.encode();
 
-        // Encrypt with ZKS double-key
+        // Encrypt with Wasif Vernam (ChaCha20-Poly1305)
         let encrypted = {
-            let mut keys = self.keys.lock().await;
-            keys.encrypt(&encoded)
+            let keys = self.keys.lock().await;
+            keys.encrypt(&encoded).map_err(|_| "Encryption failed")?
         };
 
         // Send as binary
@@ -322,8 +313,8 @@ impl P2PRelay {
         data: &[u8],
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let encrypted = {
-            let mut keys = self.keys.lock().await;
-            keys.encrypt(data)
+            let keys = self.keys.lock().await;
+            keys.encrypt(data).map_err(|_| "Encryption failed")?
         };
 
         let mut writer = self.writer.lock().await;
@@ -341,10 +332,16 @@ impl P2PRelay {
         while let Some(msg) = reader.next().await {
             match msg? {
                 Message::Binary(data) => {
-                    // Decrypt with ZKS double-key
+                    // Decrypt with Wasif Vernam (ChaCha20-Poly1305)
                     let decrypted = {
-                        let mut keys = self.keys.lock().await;
-                        keys.decrypt(&data)
+                        let keys = self.keys.lock().await;
+                        match keys.decrypt(&data) {
+                            Ok(d) => d,
+                            Err(_) => {
+                                warn!("Decryption failed (Poly1305 tag mismatch) - dropping packet");
+                                continue;
+                            }
+                        }
                     };
 
                     // Decode protocol message
@@ -381,8 +378,14 @@ impl P2PRelay {
             match msg? {
                 Message::Binary(data) => {
                     let decrypted = {
-                        let mut keys = self.keys.lock().await;
-                        keys.decrypt(&data)
+                        let keys = self.keys.lock().await;
+                        match keys.decrypt(&data) {
+                            Ok(d) => d,
+                            Err(_) => {
+                                warn!("Decryption failed (Poly1305 tag mismatch) - dropping packet");
+                                continue;
+                            }
+                        }
                     };
                     return Ok(Some(decrypted));
                 }
@@ -450,8 +453,12 @@ impl P2PRelay {
 
                 // Encrypt padding
                 let encrypted = {
-                    let mut keys_guard = keys.lock().await;
-                    keys_guard.encrypt(&padding)
+                    let keys_guard = keys.lock().await;
+                    if let Ok(enc) = keys_guard.encrypt(&padding) {
+                        enc
+                    } else {
+                        continue;
+                    }
                 };
 
                 // Send padding (ignore errors - connection might be busy)
