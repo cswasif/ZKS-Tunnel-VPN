@@ -44,6 +44,8 @@ pub enum CommandType {
     ChainForward = 0x10,
     /// Acknowledgement from next hop
     ChainAck = 0x11,
+    /// Raw IP packet for VPN mode (layer 3) - encrypted with ZKS keys
+    IpPacket = 0x20,
 }
 
 impl TryFrom<u8> for CommandType {
@@ -65,6 +67,7 @@ impl TryFrom<u8> for CommandType {
             0x0C => Ok(Self::HttpResponse),
             0x10 => Ok(Self::ChainForward),
             0x11 => Ok(Self::ChainAck),
+            0x20 => Ok(Self::IpPacket),
             _ => Err(crate::ProtoError::InvalidCommand(value)),
         }
     }
@@ -167,6 +170,12 @@ pub enum TunnelMessage {
         success: bool,
         /// Optional message
         message: String,
+    },
+    /// Raw IP packet for VPN mode (ZKS-encrypted layer 3 payload)
+    /// Used by P2P VPN to tunnel all system traffic through Exit Peer
+    IpPacket {
+        /// Full IP packet payload (encrypted with ZKS keys before wire)
+        payload: Bytes,
     },
 }
 
@@ -313,6 +322,11 @@ impl TunnelMessage {
                 buf.put_u8(if *success { 1 } else { 0 });
                 buf.put_u16(message.len() as u16);
                 buf.put_slice(message.as_bytes());
+            }
+            TunnelMessage::IpPacket { payload } => {
+                buf.put_u8(CommandType::IpPacket as u8);
+                buf.put_u32(payload.len() as u32);
+                buf.put_slice(payload);
             }
         }
 
@@ -611,6 +625,20 @@ impl TunnelMessage {
                     success,
                     message,
                 })
+            }
+            CommandType::IpPacket => {
+                if cursor.remaining() < 4 {
+                    return Err(crate::ProtoError::InsufficientData);
+                }
+                let payload_len = cursor.get_u32() as usize;
+
+                if cursor.remaining() < payload_len {
+                    return Err(crate::ProtoError::InsufficientData);
+                }
+                let payload =
+                    Bytes::copy_from_slice(&data[cursor.position() as usize..][..payload_len]);
+
+                Ok(TunnelMessage::IpPacket { payload })
             }
         }
     }

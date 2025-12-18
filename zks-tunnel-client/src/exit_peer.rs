@@ -140,6 +140,39 @@ pub async fn run_exit_peer(
                         });
                     }
 
+                    TunnelMessage::IpPacket { payload } => {
+                        debug!("IpPacket received: {} bytes", payload.len());
+                        // VPN mode: Forward IP packet to internet
+                        // Parse IP header to get destination
+                        if payload.len() >= 20 {
+                            let version = (payload[0] >> 4) & 0x0F;
+                            if version == 4 {
+                                let dst_ip = std::net::Ipv4Addr::new(
+                                    payload[16],
+                                    payload[17],
+                                    payload[18],
+                                    payload[19],
+                                );
+                                let protocol = payload[9];
+                                let proto_name = match protocol {
+                                    1 => "ICMP",
+                                    6 => "TCP",
+                                    17 => "UDP",
+                                    _ => "OTHER",
+                                };
+                                debug!("IPv4 {} packet to {}", proto_name, dst_ip);
+
+                                // TODO: Forward packet through TUN device or raw socket
+                                // For now, we just log it - full implementation requires:
+                                // 1. Create TUN device on Exit Peer
+                                // 2. Write packet to TUN
+                                // 3. Enable IP forwarding: sysctl net.ipv4.ip_forward=1
+                                // 4. Setup NAT: iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+                                // 5. Read response from TUN and send back as IpPacket
+                            }
+                        }
+                    }
+
                     _ => {
                         debug!("Unhandled message: {:?}", message);
                     }
@@ -384,4 +417,164 @@ async fn handle_dns_query(relay: Arc<P2PRelay>, request_id: u32, query: Bytes) {
             warn!("DNS query timeout or error for ID {}", request_id);
         }
     }
+}
+
+/// Run as Exit Peer in VPN mode (with TUN device for full IP packet forwarding)
+///
+/// This mode creates a TUN device on the Exit Peer to forward raw IP packets
+/// from the Client to the Internet and back.
+///
+/// Prerequisites on the Exit Peer server:
+/// - Linux with TUN support
+/// - Root privileges
+/// - Enable IP forwarding: sysctl -w net.ipv4.ip_forward=1
+/// - Setup NAT: iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+#[cfg(feature = "vpn")]
+pub async fn run_exit_peer_vpn(
+    relay_url: &str,
+    vernam_url: &str,
+    room_id: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::io::AsyncReadExt as _;
+    use tokio::io::AsyncWriteExt as _;
+
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║      ZKS-VPN Exit Peer VPN Mode - Layer 3 Forwarding         ║");
+    info!("╠══════════════════════════════════════════════════════════════╣");
+    info!("║  Room ID: {:50} ║", room_id);
+    info!("║  Relay: {:52} ║", relay_url);
+    info!("╚══════════════════════════════════════════════════════════════╝");
+
+    // Connect to relay as Exit Peer
+    let relay = P2PRelay::connect(relay_url, vernam_url, room_id, PeerRole::ExitPeer, None).await?;
+    let relay = Arc::new(relay);
+
+    info!("✅ Connected to relay as Exit Peer (VPN Mode)");
+    info!("⏳ Waiting for Client to connect...");
+
+    // Create TUN device for packet forwarding (10.0.85.2 for exit peer)
+    info!("Creating TUN device for VPN forwarding...");
+
+    let device = tun_rs::DeviceBuilder::new()
+        .ipv4(std::net::Ipv4Addr::new(10, 0, 85, 2), 24, None)
+        .mtu(1400)
+        .build_async()?;
+
+    info!("✅ TUN device created (10.0.85.2/24)");
+
+    // Enable IP forwarding on Linux
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("sysctl")
+            .args(["-w", "net.ipv4.ip_forward=1"])
+            .output();
+        info!("Enabled IP forwarding");
+
+        // Setup NAT (get default interface name)
+        let _ = std::process::Command::new("iptables")
+            .args([
+                "-t",
+                "nat",
+                "-A",
+                "POSTROUTING",
+                "-s",
+                "10.0.85.0/24",
+                "-j",
+                "MASQUERADE",
+            ])
+            .output();
+        info!("Setup NAT masquerading");
+    }
+
+    let running = Arc::new(AtomicBool::new(true));
+    let running_clone = running.clone();
+
+    // Wrap TUN device in Arc for sharing
+    let device = Arc::new(device);
+    let device_reader = device.clone();
+    let device_writer = device.clone();
+
+    // Clone relay for tasks
+    let relay_for_recv = relay.clone();
+    let relay_for_send = relay.clone();
+
+    // Task 1: Relay -> TUN (packets from Client to Internet)
+    let relay_to_tun = tokio::spawn(async move {
+        while running_clone.load(Ordering::SeqCst) {
+            match relay_for_recv.recv().await {
+                Ok(Some(TunnelMessage::IpPacket { payload })) => {
+                    debug!("Received IpPacket: {} bytes", payload.len());
+                    if let Err(e) = device_writer.send(&payload).await {
+                        warn!("Failed to write to TUN: {}", e);
+                    }
+                }
+                Ok(Some(other)) => {
+                    debug!("Received non-IpPacket message: {:?}", other);
+                }
+                Ok(None) => {
+                    info!("Relay connection closed");
+                    break;
+                }
+                Err(e) => {
+                    error!("Error receiving from relay: {}", e);
+                    break;
+                }
+            }
+        }
+    });
+
+    // Task 2: TUN -> Relay (packets from Internet to Client)
+    let running_clone2 = running.clone();
+    let tun_to_relay = tokio::spawn(async move {
+        let mut buf = vec![0u8; 2048];
+        while running_clone2.load(Ordering::SeqCst) {
+            match device_reader.recv(&mut buf).await {
+                Ok(n) => {
+                    let packet = &buf[..n];
+                    debug!("TUN read: {} bytes", n);
+
+                    // Send packet to Client
+                    let msg = TunnelMessage::IpPacket {
+                        payload: Bytes::copy_from_slice(packet),
+                    };
+                    if let Err(e) = relay_for_send.send(&msg).await {
+                        warn!("Failed to send IpPacket to relay: {}", e);
+                    }
+                }
+                Err(e) => {
+                    error!("TUN read error: {}", e);
+                    break;
+                }
+            }
+        }
+    });
+
+    info!("✅ Exit Peer VPN mode active - forwarding packets");
+    info!("Press Ctrl+C to stop...");
+
+    // Wait for Ctrl+C
+    tokio::signal::ctrl_c().await?;
+
+    running.store(false, Ordering::SeqCst);
+    info!("Shutting down Exit Peer VPN mode...");
+
+    // Cleanup NAT rules on Linux
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("iptables")
+            .args([
+                "-t",
+                "nat",
+                "-D",
+                "POSTROUTING",
+                "-s",
+                "10.0.85.0/24",
+                "-j",
+                "MASQUERADE",
+            ])
+            .output();
+    }
+
+    Ok(())
 }

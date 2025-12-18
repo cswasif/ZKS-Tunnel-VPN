@@ -32,7 +32,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2.5"
 
 # System-Wide VPN dependencies (optional)
-tun-rs = { version = "2", optional = true, features = ["async"] }
+tun-rs = { version = "2", optional = true, features = ["async", "tokio"] }
 netstack-smoltcp = { version = "0.2", optional = true }
 smoltcp = { version = "0.12", optional = true, default-features = false, features = ["std", "log", "medium-ip", "proto-ipv4", "socket-tcp", "socket-udp"] }
 tokio-util = { version = "0.7.17", features = ["compat"] }

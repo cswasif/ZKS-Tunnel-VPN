@@ -56,9 +56,12 @@ pub enum Mode {
     /// P2P VPN mode - system-wide VPN through Exit Peer (Triple-Blind)
     #[value(name = "p2p-vpn")]
     P2pVpn,
-    /// Exit Peer mode - forward traffic to Internet
+    /// Exit Peer mode - forward traffic to Internet (HTTP/TCP proxy)
     #[value(name = "exit-peer")]
     ExitPeer,
+    /// Exit Peer VPN mode - Layer 3 VPN packet forwarding (TUN device)
+    #[value(name = "exit-peer-vpn")]
+    ExitPeerVpn,
 }
 
 /// ZKS-Tunnel VPN Client
@@ -177,6 +180,14 @@ async fn main() -> Result<(), BoxError> {
             });
             return exit_peer::run_exit_peer(&args.relay, &args.vernam, &room_id).await;
         }
+        #[cfg(feature = "vpn")]
+        Mode::ExitPeerVpn => {
+            let room_id = args.room.clone().unwrap_or_else(|| {
+                error!("Room ID required for Exit Peer VPN mode. Use --room <id>");
+                std::process::exit(1);
+            });
+            return exit_peer::run_exit_peer_vpn(&args.relay, &args.vernam, &room_id).await;
+        }
         _ => {}
     }
 
@@ -192,7 +203,7 @@ async fn main() -> Result<(), BoxError> {
         Mode::Socks5 => run_socks5_mode(args, tunnel).await,
         Mode::Http => run_http_proxy_mode(args, tunnel).await,
         Mode::Vpn => run_vpn_mode(args, tunnel).await,
-        _ => unreachable!(),
+        Mode::P2pClient | Mode::P2pVpn | Mode::ExitPeer | Mode::ExitPeerVpn => unreachable!(),
     }
 }
 
@@ -239,6 +250,10 @@ fn print_banner(args: &Args) {
         }
         Mode::ExitPeer => {
             info!("║  Mode:   Exit Peer (forward to Internet)                    ║");
+            info!("║  Room:   {}  ", args.room.as_deref().unwrap_or("none"));
+        }
+        Mode::ExitPeerVpn => {
+            info!("║  Mode:   Exit Peer VPN (Layer 3 Forwarding)                 ║");
             info!("║  Room:   {}  ", args.room.as_deref().unwrap_or("none"));
         }
         Mode::P2pVpn => {

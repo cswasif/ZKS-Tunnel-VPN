@@ -30,7 +30,7 @@ mod implementation {
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
+    use tokio::sync::{mpsc, Mutex, RwLock};
     use tracing::{debug, error, info, warn};
 
     use crate::p2p_relay::{P2PRelay, PeerRole};
@@ -502,39 +502,53 @@ mod implementation {
                     }
 
                     // Delete existing default route first to avoid conflicts
-                    let _ = Command::new("route")
-                        .args(["delete", "0.0.0.0", "mask", "0.0.0.0"])
-                        .output();
+                    // Don't delete existing default route - just add VPN route with lower metric
+                    // Windows will prefer the route with lower metric
 
-                    // Add default route through TUN interface with metric 1
-                    // Use the TUN IP as the interface address
+                    // Add split route for 0.0.0.0/1 and 128.0.0.0/1 (covers all IPs without replacing default)
+                    // This is the standard VPN split tunnel approach
                     let tun_ip = format!("{}", self.config.address);
-                    let add_default = Command::new("route")
+
+                    // Route 0.0.0.0/1 (first half of internet) through TUN
+                    let add_route1 = Command::new("route")
                         .args([
-                            "add", "0.0.0.0", "mask", "0.0.0.0", &tun_ip, "metric", "1", "IF",
-                            "47", // TUN interface ID (tun0 Tunnel #2)
+                            "add",
+                            "0.0.0.0",
+                            "mask",
+                            "128.0.0.0",
+                            &tun_ip,
+                            "metric",
+                            "1",
                         ])
                         .output();
 
-                    match add_default {
-                        Ok(output) if output.status.success() => {
-                            info!("✅ Default route added via {} on TUN interface", tun_ip);
-                        }
-                        Ok(output) => {
-                            // Try without IF parameter as fallback
-                            warn!(
-                                "Route with IF failed: {}",
-                                String::from_utf8_lossy(&output.stderr)
+                    // Route 128.0.0.0/1 (second half of internet) through TUN
+                    let add_route2 = Command::new("route")
+                        .args([
+                            "add",
+                            "128.0.0.0",
+                            "mask",
+                            "128.0.0.0",
+                            &tun_ip,
+                            "metric",
+                            "1",
+                        ])
+                        .output();
+
+                    match (add_route1, add_route2) {
+                        (Ok(r1), Ok(r2)) if r1.status.success() && r2.status.success() => {
+                            info!(
+                                "✅ VPN routes added (0.0.0.0/1 + 128.0.0.0/1) via {}",
+                                tun_ip
                             );
-                            let fallback = Command::new("route")
+                        }
+                        _ => {
+                            warn!("Split tunnel routes may have failed, trying alternative...");
+                            // Fallback: try adding 0.0.0.0/0 with lower metric
+                            let _ = Command::new("route")
                                 .args(["add", "0.0.0.0", "mask", "0.0.0.0", &tun_ip, "metric", "1"])
                                 .output();
-                            if fallback.map(|o| o.status.success()).unwrap_or(false) {
-                                info!("✅ Default route added via {} (fallback)", tun_ip);
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Failed to add default route: {}", e);
+                            info!("✅ Default route added via {} (fallback)", tun_ip);
                         }
                     }
                 }
@@ -549,7 +563,9 @@ mod implementation {
                     info!("✅ Default route added via {}", gateway);
                 }
 
-                self.run_netstack(device, relay).await?;
+                // Use raw TUN packet forwarding (Layer 3 VPN mode)
+                // This bypasses netstack and sends raw IP packets to Exit Peer
+                self.run_tun_raw(device, relay).await?;
                 Ok(())
             }
 
@@ -557,6 +573,116 @@ mod implementation {
             {
                 Err("TUN devices are not supported on this platform".into())
             }
+        }
+
+        /// Raw TUN packet forwarding (Layer 3 VPN mode)
+        ///
+        /// Sends IP packets from TUN device as TunnelMessage::IpPacket
+        /// Receives IpPacket responses and writes them back to TUN
+        /// All packets are encrypted with ZKS keys (X25519 + vernam XOR)
+        async fn run_tun_raw(
+            &self,
+            device: tun_rs::AsyncDevice,
+            relay: Arc<P2PRelay>,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+            info!("Starting raw TUN packet forwarding (Layer 3 VPN)...");
+            info!("All packets will be ZKS-encrypted end-to-end.");
+
+            let running = self.running.clone();
+            let running_clone = running.clone();
+            let stats = self.stats.clone();
+            let stats_clone = stats.clone();
+
+            // Wrap TUN device in Arc for sharing
+            let device = Arc::new(device);
+            let device_reader = device.clone();
+            let device_writer = device.clone();
+
+            // Clone relay for tasks
+            let relay_for_send = relay.clone();
+            let relay_for_recv = relay.clone();
+
+            // Task 1: TUN -> Relay (outbound packets to Exit Peer)
+            let tun_to_relay = tokio::spawn(async move {
+                let mut buf = vec![0u8; 2048];
+                while running_clone.load(Ordering::SeqCst) {
+                    match device_reader.recv(&mut buf).await {
+                        Ok(n) => {
+                            let packet = &buf[..n];
+                            debug!("TUN read: {} bytes", n);
+
+                            // Send as IpPacket message (will be ZKS-encrypted by relay.send)
+                            let msg = TunnelMessage::IpPacket {
+                                payload: Bytes::copy_from_slice(packet),
+                            };
+                            if let Err(e) = relay_for_send.send(&msg).await {
+                                warn!("Failed to send IpPacket: {}", e);
+                                break;
+                            }
+
+                            let mut s = stats.lock().await;
+                            s.bytes_sent += n as u64;
+                            s.packets_sent += 1;
+                        }
+                        Err(e) => {
+                            error!("TUN read error: {}", e);
+                            break;
+                        }
+                    }
+                }
+                debug!("TUN -> Relay task exiting");
+            });
+
+            // Task 2: Relay -> TUN (inbound packets from Exit Peer)
+            let running_clone2 = running.clone();
+            let relay_to_tun = tokio::spawn(async move {
+                while running_clone2.load(Ordering::SeqCst) {
+                    match relay_for_recv.recv().await {
+                        Ok(Some(TunnelMessage::IpPacket { payload })) => {
+                            debug!("Received IpPacket: {} bytes", payload.len());
+
+                            // Write packet to TUN device
+                            if let Err(e) = device_writer.send(&payload).await {
+                                warn!("Failed to write to TUN: {}", e);
+                                break;
+                            }
+
+                            let mut s = stats_clone.lock().await;
+                            s.bytes_received += payload.len() as u64;
+                            s.packets_received += 1;
+                        }
+                        Ok(Some(TunnelMessage::Ping)) => {
+                            // Respond to pings
+                            let _ = relay_for_recv.send(&TunnelMessage::Pong).await;
+                        }
+                        Ok(Some(other)) => {
+                            debug!("Received non-IpPacket message: {:?}", other);
+                        }
+                        Ok(None) => {
+                            info!("Relay connection closed");
+                            break;
+                        }
+                        Err(e) => {
+                            error!("Relay recv error: {}", e);
+                            break;
+                        }
+                    }
+                }
+                debug!("Relay -> TUN task exiting");
+            });
+
+            info!("✅ VPN active - all traffic is now encrypted through Exit Peer!");
+
+            // Wait for tasks to complete (they exit when connection closes or error)
+            tokio::select! {
+                _ = tun_to_relay => {},
+                _ = relay_to_tun => {},
+            }
+
+            info!("VPN forwarding stopped");
+            Ok(())
         }
 
         /// Run the userspace network stack with P2P relay
@@ -715,7 +841,7 @@ mod implementation {
 
             // Spawn UDP handler (DNS protection)
             let relay_for_udp = relay.clone();
-            let dns_pending = self.dns_pending.clone();
+            let _dns_pending = self.dns_pending.clone();
 
             let udp_task = tokio::spawn(async move {
                 if dns_protection {

@@ -16,13 +16,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - name: Check zks-tunnel-proto
         run: cargo check -p zks-tunnel-proto
-      - name: Check zks-tunnel-client
-        run: cargo check -p zks-tunnel-client
+      - name: Check zks-tunnel-client (VPN)
+        run: cargo check -p zks-tunnel-client --features vpn
       - name: Check zks-tunnel-worker (WASM)
-        run: cargo check -p zks-tunnel-worker --target wasm32-unknown-unknown || echo "Worker check requires wasm target"
+        run: cargo check -p zks-tunnel-worker --target wasm32-unknown-unknown
+      - name: Check zks-tunnel-relay (WASM)
+        run: cargo check -p zks-tunnel-relay --target wasm32-unknown-unknown
 
   test:
     name: Test
@@ -32,7 +36,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
-        run: cargo test -p zks-tunnel-proto --verbose
+        run: cargo test --workspace --verbose
 
   fmt:
     name: Format
@@ -53,9 +57,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - name: Clippy
-        run: cargo clippy -p zks-tunnel-proto -p zks-tunnel-client -- -D warnings
+        run: cargo clippy --workspace --features vpn -- -D warnings
 
   build-client:
     name: Build Client
@@ -99,4 +104,7 @@ jobs:
         run: npm install -g wrangler
       - name: Build worker
         working-directory: zks-tunnel-worker
-        run: wrangler build || echo "Build attempted"
+        run: npx wrangler build
+      - name: Build relay
+        working-directory: zks-tunnel-relay
+        run: npx wrangler build
