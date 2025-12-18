@@ -209,10 +209,6 @@ mod implementation {
             let relay_clone = relay.clone();
             let streams = self.streams.clone();
             let stats = self.stats.clone();
-            let running = self.running.clone();
-
-            let dns_pending = self.dns_pending.clone();
-            let dns_response_tx = self.dns_response_tx.clone();
 
             // Create TUN device and start packet processing
             self.run_tun_loop(relay).await?;
@@ -318,8 +314,6 @@ mod implementation {
                 }
             }
         }
-
-
 
         /// Stop the VPN
         pub async fn stop(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
