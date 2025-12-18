@@ -31,4 +31,7 @@ $$ Ciphertext = Plaintext \oplus ChaCha20(Seed) \oplus RemoteStream $$
     - `cipher`: ChaCha20Poly1305 instance.
     - `remote_buffer`: Ring buffer holding fetched entropy.
     - `nonce_counter`: u64 counter for nonce generation.
+- **Remote Key Endpoint**:
+    - URL: `https://zks-key.md-wasif-faisal.workers.dev/entropy?size=32&n=10`
+    - Response: JSON `{"entropy": "hex_string", ...}`
 - **Optimization**: Remote keys are fetched in parallel to the data stream to prevent blocking.

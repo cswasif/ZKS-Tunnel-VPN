@@ -118,7 +118,7 @@ struct Args {
     relay: String,
 
     /// ZKS-Vernam key server URL (for double-key encryption)
-    #[arg(long, default_value = "https://zks-vernam.md-wasif-faisal.workers.dev")]
+    #[arg(long, default_value = "https://zks-key.md-wasif-faisal.workers.dev")]
     vernam: String,
 
     /// Constant Rate Padding in Kbps (traffic analysis defense)

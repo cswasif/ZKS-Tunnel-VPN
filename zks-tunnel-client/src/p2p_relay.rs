@@ -104,10 +104,33 @@ impl WasifVernam {
         self.cipher.decrypt(nonce, ciphertext)
     }
     
-    /// Fetch remote key (Placeholder for future enhancement)
-    pub async fn fetch_remote_key(&mut self, _vernam_url: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // In the future, this will fetch entropy to XOR with the stream.
-        // For now, ChaCha20Poly1305 provides sufficient security.
+    /// Fetch remote key from zks-vernam worker
+    pub async fn fetch_remote_key(&mut self, vernam_url: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let url = format!("{}/entropy?size=32&n=10", vernam_url.trim_end_matches('/'));
+        
+        // Fetch JSON from worker
+        let response = reqwest::get(&url).await?;
+        if !response.status().is_success() {
+            return Err(format!("Failed to fetch entropy: {}", response.status()).into());
+        }
+        
+        let body = response.text().await?;
+        
+        // Parse JSON: {"entropy": "hex_string", ...}
+        let json: serde_json::Value = serde_json::from_str(&body)?;
+        let entropy_hex = json["entropy"].as_str().ok_or("Missing entropy field")?;
+        
+        // Decode hex
+        let entropy = hex::decode(entropy_hex)?;
+        
+        if entropy.len() != 32 {
+            return Err("Invalid entropy length".into());
+        }
+        
+        // Store for future mixing (currently unused but ready)
+        self.remote_key = entropy;
+        
+        info!("Fetched 32 bytes of Swarm Entropy from zks-key worker");
         Ok(())
     }
 }
