@@ -176,9 +176,12 @@ impl DurableObject for VpnRoom {
                     session.peer_id,
                     text
                 );
-                if text == "ping" {
+                // Handle ping/pong keepalive
+                if text == "ping" || text == "{\"type\":\"ping\"}" {
                     let pong = serde_json::to_string(&ServerEvent::Pong).unwrap_or_default();
-                    let _ = ws.send_with_str(&pong);
+                    if let Err(e) = ws.send_with_str(&pong) {
+                        console_error!("[VpnRoom] Failed to send pong: {:?}", e);
+                    }
                 } else {
                     // Forward text messages (control messages) to the other peer
                     console_log!("[VpnRoom] Forwarding text to peer...");
@@ -244,13 +247,32 @@ impl VpnRoom {
         };
 
         for ws in self.state.get_websockets() {
+            // Only send to OPEN WebSockets
+            if !matches!(ws.ready_state(), WebsocketReadyState::Open) {
+                continue;
+            }
+            
             if let Ok(Some(session)) = ws.deserialize_attachment::<PeerSession>() {
                 if session.role == target_role {
-                    let _ = ws.send_with_bytes(data);
+                    // Error handling: log but don't fail if send fails
+                    if let Err(e) = ws.send_with_bytes(data) {
+                        console_error!(
+                            "[VpnRoom] Failed to send {} bytes to {:?}: {:?}",
+                            data.len(),
+                            target_role,
+                            e
+                        );
+                    }
                     return; // Only one peer of each type
                 }
             }
         }
+        
+        console_log!(
+            "[VpnRoom] No active {:?} peer found to relay {} bytes",
+            target_role,
+            data.len()
+        );
     }
 
     /// Relay text to the OTHER peer
@@ -288,9 +310,22 @@ impl VpnRoom {
 
     fn broadcast_text(&self, text: &str, exclude_id: Option<&str>) {
         for ws in self.state.get_websockets() {
+            // Only broadcast to OPEN WebSockets
+            if !matches!(ws.ready_state(), WebsocketReadyState::Open) {
+                continue;
+            }
+            
             if let Ok(Some(session)) = ws.deserialize_attachment::<PeerSession>() {
                 if exclude_id.map(|id| id != session.peer_id).unwrap_or(true) {
-                    let _ = ws.send_with_str(text);
+                    // Error handling: log but continue on failure
+                    if let Err(e) = ws.send_with_str(text) {
+                        console_error!(
+                            "[VpnRoom] Failed to broadcast to {:?} ({}): {:?}",
+                            session.role,
+                            session.peer_id,
+                            e
+                        );
+                    }
                 }
             }
         }
