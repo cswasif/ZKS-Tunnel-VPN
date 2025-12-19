@@ -30,7 +30,3 @@ worker/pkg/
 # Logs
 *.log
 npm-debug.log*
-
-# SSH Keys (never commit)
-SSH KEYS/
-*.pem

@@ -9,10 +9,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/zks-vpn/zks-go-client/debug"
 	"github.com/zks-vpn/zks-go-client/relay"
 	"github.com/zks-vpn/zks-go-client/socks5"
-	"github.com/zks-vpn/zks-go-client/vpn"
 )
 
 const (
@@ -26,11 +24,7 @@ func main() {
 	room := flag.String("room", "", "Room ID for P2P connection")
 	relayURL := flag.String("relay", defaultRelayURL, "Relay WebSocket URL")
 	listenAddr := flag.String("listen", "127.0.0.1:1080", "SOCKS5 listen address")
-	debugMode := flag.Bool("debug", false, "Enable verbose debug logging")
 	flag.Parse()
-
-	// Set debug mode globally
-	debug.Enabled = *debugMode
 
 	if *room == "" {
 		fmt.Println("Error: --room is required")
@@ -98,44 +92,10 @@ func runP2PVPN(relayURL, roomID string) {
 	fmt.Println("\n🔒 Starting P2P VPN (System-Wide TUN Mode)...")
 	fmt.Println("⚠️  VPN mode requires Administrator privileges")
 
-	// Connect to relay
-	conn, err := relay.Connect(relayURL, roomID, relay.RoleClient)
-	if err != nil {
-		fmt.Printf("❌ Failed to connect: %v\n", err)
-		os.Exit(1)
-	}
-	defer conn.Close()
-
-	fmt.Println("✅ Connected to Exit Peer via ZKS relay")
-
-	// Create TUN device
-	tunDev, err := vpn.NewTUN(conn)
-	if err != nil {
-		fmt.Printf("❌ Failed to create TUN device: %v\n", err)
-		fmt.Println("   Make sure you are running as Administrator")
-		os.Exit(1)
-	}
-	defer tunDev.Stop()
-
-	// Start VPN
-	if err := tunDev.Start(); err != nil {
-		fmt.Printf("❌ Failed to start VPN: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Println("🚀 VPN Tunnel Established!")
-	fmt.Println("   IP: 10.0.85.1")
-	fmt.Println("   All traffic is now routed through the tunnel")
-	fmt.Println("   Press Ctrl+C to stop")
-
-	// Wait for interrupt
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	<-sigChan
-
-	fmt.Println("\n⏹️  Shutting down VPN...")
-	tunDev.Stop()
-	conn.Close()
+	// TODO: Implement TUN mode using WireGuard's wintun
+	fmt.Println("❌ VPN mode not yet implemented in Go client")
+	fmt.Println("   Use --mode p2p-client for SOCKS5 proxy mode")
+	os.Exit(1)
 }
 
 func runExitPeer(relayURL, roomID string) {
