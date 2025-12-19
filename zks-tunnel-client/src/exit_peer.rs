@@ -20,12 +20,14 @@ use crate::p2p_relay::{P2PRelay, PeerRole};
 
 /// Active TCP connection managed by Exit Peer
 #[cfg(feature = "socks5")]
+#[allow(dead_code)]
 struct ActiveConnection {
     write_half: tokio::io::WriteHalf<TcpStream>,
 }
 
 /// Exit Peer state
 #[cfg(feature = "socks5")]
+#[allow(dead_code)]
 struct ExitPeerState {
     /// Active TCP connections (stream_id -> connection)
     connections: HashMap<StreamId, ActiveConnection>,
