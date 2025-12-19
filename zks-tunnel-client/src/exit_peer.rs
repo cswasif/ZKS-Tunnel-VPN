@@ -18,13 +18,15 @@ use zks_tunnel_proto::{StreamId, TunnelMessage};
 
 use crate::p2p_relay::{P2PRelay, PeerRole};
 
+
 /// Active TCP connection managed by Exit Peer
+#[cfg(feature = "socks5")]
 struct ActiveConnection {
     write_half: tokio::io::WriteHalf<TcpStream>,
 }
 
 /// Exit Peer state
-#[allow(dead_code)]
+#[cfg(feature = "socks5")]
 struct ExitPeerState {
     /// Active TCP connections (stream_id -> connection)
     connections: HashMap<StreamId, ActiveConnection>,
@@ -32,6 +34,7 @@ struct ExitPeerState {
     next_stream_id: StreamId,
 }
 
+#[cfg(feature = "socks5")]
 impl ExitPeerState {
     fn new() -> Self {
         Self {
@@ -46,6 +49,7 @@ impl ExitPeerState {
 /// Connects to the relay, waits for Client to connect,
 /// then forwards all traffic to/from the Internet.
 /// Automatically reconnects on connection drop or errors.
+#[cfg(feature = "socks5")]
 pub async fn run_exit_peer(
     relay_url: &str,
     vernam_url: &str,
@@ -215,6 +219,7 @@ pub async fn run_exit_peer(
 }
 
 /// Handle CONNECT request - open TCP connection to target
+#[cfg(feature = "socks5")]
 async fn handle_connect(
     relay: Arc<P2PRelay>,
     state: Arc<Mutex<ExitPeerState>>,
@@ -270,6 +275,7 @@ async fn handle_connect(
 
 /// Read data from TCP connection and send to relay
 /// Takes ownership of the read half of the TCP stream
+#[cfg(feature = "socks5")]
 async fn read_from_connection(
     relay: Arc<P2PRelay>,
     stream_id: StreamId,
@@ -311,6 +317,7 @@ async fn read_from_connection(
 }
 
 /// Handle HTTP request via reqwest (for HTTP proxy mode)
+#[cfg(feature = "socks5")]
 async fn handle_http_request(
     relay: Arc<P2PRelay>,
     stream_id: StreamId,
@@ -387,6 +394,7 @@ async fn handle_http_request(
 }
 
 /// Handle DNS query by forwarding to public DNS
+#[cfg(feature = "socks5")]
 async fn handle_dns_query(relay: Arc<P2PRelay>, request_id: u32, query: Bytes) {
     // Use a fresh socket for each query
     let socket = match tokio::net::UdpSocket::bind("0.0.0.0:0").await {
