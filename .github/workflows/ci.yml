@@ -108,3 +108,20 @@ jobs:
       - name: Build relay
         working-directory: zks-tunnel-relay
         run: npx wrangler build
+
+  build-go-client:
+    name: Build Go Client (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+      - name: Build Go client
+        working-directory: zks-go-client
+        run: go build -o zks-vpn-go.exe .
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zks-vpn-go-windows-x64
+          path: zks-go-client/zks-vpn-go.exe
