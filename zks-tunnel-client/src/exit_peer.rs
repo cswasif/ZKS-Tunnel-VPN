@@ -16,6 +16,9 @@ use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 use zks_tunnel_proto::{StreamId, TunnelMessage};
 
+#[cfg(feature = "vpn")]
+use tun_rs::{AsyncDevice, DeviceBuilder};
+
 use crate::p2p_relay::{P2PRelay, PeerRole};
 
 /// Active TCP connection managed by Exit Peer
@@ -30,6 +33,9 @@ struct ExitPeerState {
     connections: HashMap<StreamId, ActiveConnection>,
     /// Next stream ID for outbound connections
     next_stream_id: StreamId,
+    /// TUN device (for sending/receiving packets to/from OS)
+    #[cfg(feature = "vpn")]
+    tun_writer: Option<Arc<AsyncDevice>>,
 }
 
 impl ExitPeerState {
@@ -37,6 +43,8 @@ impl ExitPeerState {
         Self {
             connections: HashMap::new(),
             next_stream_id: 1,
+            #[cfg(feature = "vpn")]
+            tun_writer: None,
         }
     }
 }
@@ -82,14 +90,62 @@ pub async fn run_exit_peer(
                 }
             };
 
+        // State for managing connections (reset on each connection)
+        let state = Arc::new(Mutex::new(ExitPeerState::new()));
+
+        // Initialize TUN device (VPN mode only)
+        #[cfg(feature = "vpn")]
+        {
+            info!("🔧 Initializing TUN device (tun0)...");
+
+            let dev = DeviceBuilder::new()
+                .ipv4("10.0.85.2", 24, None)
+                .mtu(1400)
+                .build_async()
+                .map_err(|e| format!("Failed to create TUN: {}", e))?;
+            info!("✅ TUN device created: 10.0.85.2/24");
+
+            // Create Arc for sharing device between tasks
+            let dev = Arc::new(dev);
+
+            // Spawn task to read from TUN and send to Relay
+            let relay_clone = relay.clone();
+            let dev_reader = dev.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 4096];
+                loop {
+                    match dev_reader.recv(&mut buf).await {
+                        Ok(n) => {
+                            if n > 0 {
+                                let payload = Bytes::copy_from_slice(&buf[..n]);
+                                // Send IpPacket to client
+                                if let Err(e) =
+                                    relay_clone.send(&TunnelMessage::IpPacket { payload }).await
+                                {
+                                    warn!("Failed to send IpPacket to relay: {}", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!("Error reading from TUN: {}", e);
+                            break;
+                        }
+                    }
+                }
+            });
+
+            // Store device in state for writing
+            {
+                let mut state_locked = state.lock().await;
+                state_locked.tun_writer = Some(dev);
+            }
+        }
+
         info!("✅ Connected to relay as Exit Peer");
         info!("⏳ Waiting for Client to connect...");
 
         // Reset retry count on successful connection
         retry_count = 0;
-
-        // State for managing connections (reset on each connection)
-        let state = Arc::new(Mutex::new(ExitPeerState::new()));
 
         // Inner message loop
         let disconnect_reason = loop {
@@ -166,27 +222,27 @@ pub async fn run_exit_peer(
                         }
 
                         TunnelMessage::IpPacket { payload } => {
-                            debug!("IpPacket received: {} bytes", payload.len());
-                            // VPN mode: Forward IP packet to internet
-                            // Parse IP header to get destination
-                            if payload.len() >= 20 {
-                                let version = (payload[0] >> 4) & 0x0F;
-                                if version == 4 {
-                                    let dst_ip = std::net::Ipv4Addr::new(
-                                        payload[16],
-                                        payload[17],
-                                        payload[18],
-                                        payload[19],
-                                    );
-                                    let protocol = payload[9];
-                                    let proto_name = match protocol {
-                                        1 => "ICMP",
-                                        6 => "TCP",
-                                        17 => "UDP",
-                                        _ => "OTHER",
-                                    };
-                                    debug!("IPv4 {} packet to {}", proto_name, dst_ip);
+                            info!("📦 IpPacket received: {} bytes", payload.len());
+
+                            #[cfg(feature = "vpn")]
+                            {
+                                // Send packet to TUN device
+                                let state = state_clone.lock().await;
+                                if let Some(dev) = &state.tun_writer {
+                                    info!("✅ Sending packet to TUN device...");
+                                    if let Err(e) = dev.send(&payload).await {
+                                        error!("❌ Failed to send to TUN: {}", e);
+                                    } else {
+                                        info!("✅ Packet sent to TUN successfully");
+                                    }
+                                } else {
+                                    warn!("⚠️  Received IpPacket but TUN is not initialized!");
                                 }
+                            }
+
+                            #[cfg(not(feature = "vpn"))]
+                            {
+                                warn!("⚠️  VPN feature disabled, dropping packet");
                             }
                         }
 

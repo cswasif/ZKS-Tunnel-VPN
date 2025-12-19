@@ -76,11 +76,22 @@ impl DurableObject for VpnRoom {
             _ => PeerRole::Client,
         };
 
-        // Check if role is already taken
+        // Check if role is already taken by an ACTIVE connection
         let existing_roles: Vec<PeerRole> = self
-            .get_all_sessions()
+            .state
+            .get_websockets()
             .into_iter()
-            .map(|s| s.role)
+            .filter(|ws| {
+                // Only count WebSockets that are actually connected (not closing/closed)
+                // ReadyState: 0=Connecting, 1=Open, 2=Closing, 3=Closed
+                matches!(ws.ready_state(), WebsocketReadyState::Open)
+            })
+            .filter_map(|ws| {
+                ws.deserialize_attachment::<PeerSession>()
+                    .ok()
+                    .flatten()
+                    .map(|s| s.role)
+            })
             .collect();
 
         if existing_roles.contains(&role) {
