@@ -3,28 +3,13 @@ package vpn
 import (
 	"fmt"
 	"log"
+	"net"
 	"os/exec"
 	"strings"
 
 	"github.com/zks-vpn/zks-go-client/protocol"
 	"github.com/zks-vpn/zks-go-client/relay"
 	"golang.zx2c4.com/wireguard/tun"
-)
-
-const (
-	tunInterfaceName = "zks-tun0"
-	tunIP            = "10.0.85.1"
-	tunNetmask       = "255.255.255.0"
-	mtu              = 1420
-	batchSize        = 16 // Read multiple packets at once
-)
-
-// StartTUN creates the TUN device and starts processing packets
-func StartTUN(relayConn *relay.Connection) error {
-	log.Printf("🔌 Creating TUN device: %s", tunInterfaceName)
-
-	// Create TUN device using Wintun
-	dev, err := tun.CreateTUN(tunInterfaceName, mtu)
 	if err != nil {
 		return fmt.Errorf("failed to create TUN device: %v", err)
 	}
@@ -156,32 +141,71 @@ func configureRouting(ifaceName string) error {
 	ifIndex := strings.TrimSpace(string(out))
 	log.Printf("🔢 TUN Interface Index: %s", ifIndex)
 
-	// 2. Get the original default gateway (before we mess with routes)
-	cmd = exec.Command("powershell", "-Command", "(Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Where-Object { $_.NextHop -ne '0.0.0.0' } | Select-Object -First 1).NextHop")
+	// Set Interface Metric to 1 to ensure our routes take precedence
+	// Windows Automatic Metric can assign high values (e.g. 25-50) which overrides our route metric
+	log.Printf("📉 Setting TUN interface metric to 1...")
+	exec.Command("netsh", "interface", "ipv4", "set", "interface", ifIndex, "metric=1").Run()
+
+	// 2. Get the original default gateway (robust method)
+	// We get all NextHops for 0.0.0.0/0 and filter in Go to avoid PowerShell syntax issues
+	cmd = exec.Command("powershell", "-Command", "Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Select-Object -ExpandProperty NextHop")
 	out, err = cmd.CombinedOutput()
 	if err != nil {
 		log.Printf("⚠️ Could not get default gateway: %v", err)
 	}
-	originalGateway := strings.TrimSpace(string(out))
+	
+	gatewayOutput := strings.TrimSpace(string(out))
+	originalGateway := ""
+	for _, line := range strings.Split(gatewayOutput, "\r\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && line != "0.0.0.0" && line != "::" {
+			originalGateway = line
+			break
+		}
+	}
 	log.Printf("🌐 Original gateway: %s", originalGateway)
 
-	// 3. Add bypass routes for relay server IPs (Cloudflare Workers)
-	// These routes ensure the WebSocket connection to the relay stays on the local network
-	// Cloudflare anycast IPs - we route these to the original gateway
+	// 3. Add bypass routes for relay server IPs
+	// Resolve relay hostname to get exact IPs
+	relayHost := "zks-tunnel-relay.md-wasif-faisal.workers.dev"
+	ips, err := net.LookupHost(relayHost)
+	if err != nil {
+		log.Printf("⚠️ Failed to resolve relay host %s: %v", relayHost, err)
+	}
+
 	bypassIPs := []string{
 		"104.16.0.0/12",    // Cloudflare main range
 		"172.64.0.0/13",    // Cloudflare range
 		"131.0.72.0/22",    // Cloudflare range
 	}
+	// Add resolved IPs to bypass list
+	for _, ip := range ips {
+		if strings.Contains(ip, ".") { // IPv4 only
+			bypassIPs = append(bypassIPs, ip+"/32")
+		}
+	}
 
 	if originalGateway != "" {
 		for _, bypassIP := range bypassIPs {
-			log.Printf("🔓 Adding bypass route: %s -> %s (original gateway)", bypassIP, originalGateway)
-			cmd := exec.Command("netsh", "interface", "ipv4", "add", "route", bypassIP, "nexthop="+originalGateway, "metric=1")
-			if out, err := cmd.CombinedOutput(); err != nil {
-				log.Printf("⚠️ Bypass route add info: %s", strings.TrimSpace(string(out)))
+			log.Printf("🔓 Adding bypass route: %s -> %s", bypassIP, originalGateway)
+			// Use route.exe for reliability
+			// route add <IP> mask <MASK> <GATEWAY> metric 1
+			parts := strings.Split(bypassIP, "/")
+			ip := parts[0]
+			// Calculate mask from prefix length (simple lookup for common ones)
+			mask := "255.255.255.255" // Default for /32
+			if len(parts) > 1 {
+				switch parts[1] {
+				case "12": mask = "255.240.0.0"
+				case "13": mask = "255.248.0.0"
+				case "22": mask = "255.255.252.0"
+				}
 			}
+			
+			exec.Command("route", "add", ip, "mask", mask, originalGateway, "metric", "1").Run()
 		}
+	} else {
+		log.Printf("❌ CRITICAL: No default gateway found! VPN routing loop likely!")
 	}
 
 	// 4. Add VPN routes (0.0.0.0/1 and 128.0.0.0/1) pointing to TUN interface
