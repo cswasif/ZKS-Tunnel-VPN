@@ -544,6 +544,15 @@ pub async fn run_exit_peer_vpn(
                             warn!("Failed to write to TUN: {}", e);
                         }
                     }
+                    Ok(Some(TunnelMessage::BatchIpPacket { packets })) => {
+                        debug!("Received BatchIpPacket: {} packets", packets.len());
+                        // Write each packet in the batch to TUN
+                        for packet in packets {
+                            if let Err(e) = device_writer.send(&packet).await {
+                                warn!("Failed to write batch packet to TUN: {}", e);
+                            }
+                        }
+                    }
                     Ok(Some(other)) => {
                         debug!("Received non-IpPacket message: {:?}", other);
                     }
