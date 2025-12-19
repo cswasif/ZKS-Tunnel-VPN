@@ -247,11 +247,6 @@ impl VpnRoom {
         };
 
         for ws in self.state.get_websockets() {
-            // Only send to OPEN WebSockets
-            if !matches!(ws.ready_state(), WebsocketReadyState::Open) {
-                continue;
-            }
-            
             if let Ok(Some(session)) = ws.deserialize_attachment::<PeerSession>() {
                 if session.role == target_role {
                     // Error handling: log but don't fail if send fails
@@ -310,11 +305,6 @@ impl VpnRoom {
 
     fn broadcast_text(&self, text: &str, exclude_id: Option<&str>) {
         for ws in self.state.get_websockets() {
-            // Only broadcast to OPEN WebSockets
-            if !matches!(ws.ready_state(), WebsocketReadyState::Open) {
-                continue;
-            }
-            
             if let Ok(Some(session)) = ws.deserialize_attachment::<PeerSession>() {
                 if exclude_id.map(|id| id != session.peer_id).unwrap_or(true) {
                     // Error handling: log but continue on failure
