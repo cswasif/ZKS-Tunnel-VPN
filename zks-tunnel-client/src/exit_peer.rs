@@ -20,7 +20,7 @@ use crate::p2p_relay::{P2PRelay, PeerRole};
 
 /// Active TCP connection managed by Exit Peer
 struct ActiveConnection {
-    stream: TcpStream,
+    write_half: tokio::io::WriteHalf<TcpStream>,
 }
 
 /// Exit Peer state
@@ -119,7 +119,7 @@ pub async fn run_exit_peer(
                             // Forward data to the connection
                             let mut state = state_clone.lock().await;
                             if let Some(conn) = state.connections.get_mut(&stream_id) {
-                                if let Err(e) = conn.stream.write_all(&payload).await {
+                                if let Err(e) = conn.write_half.write_all(&payload).await {
                                     warn!("Failed to write to stream {}: {}", stream_id, e);
                                 }
                             }
@@ -228,6 +228,9 @@ async fn handle_connect(
         Ok(stream) => {
             info!("Connected to {} (stream {})", addr, stream_id);
 
+            // Split stream into read and write halves
+            let (read_half, write_half) = tokio::io::split(stream);
+
             // Send success response
             if let Err(e) = relay
                 .send(&TunnelMessage::ConnectSuccess { stream_id })
@@ -237,20 +240,18 @@ async fn handle_connect(
                 return;
             }
 
-            // Store connection
+            // Store write half for sending data to remote
             {
                 let mut state = state.lock().await;
                 state
                     .connections
-                    .insert(stream_id, ActiveConnection { stream });
+                    .insert(stream_id, ActiveConnection { write_half });
             }
 
-            // Start reading from the connection
+            // Start reading from the connection (read half owned by task)
             let relay_clone = relay.clone();
-            let state_clone = state.clone();
-
             tokio::spawn(async move {
-                read_from_connection(relay_clone, state_clone, stream_id).await;
+                read_from_connection(relay_clone, stream_id, read_half).await;
             });
         }
         Err(e) => {
@@ -268,34 +269,25 @@ async fn handle_connect(
 }
 
 /// Read data from TCP connection and send to relay
+/// Takes ownership of the read half of the TCP stream
 async fn read_from_connection(
     relay: Arc<P2PRelay>,
-    state: Arc<Mutex<ExitPeerState>>,
     stream_id: StreamId,
+    mut read_half: tokio::io::ReadHalf<TcpStream>,
 ) {
+    use tokio::io::AsyncReadExt;
+
     let mut buf = [0u8; 16384];
 
     loop {
-        // Get the stream (need to re-acquire each time due to async)
-        let read_result = {
-            let mut state = state.lock().await;
-            if let Some(conn) = state.connections.get_mut(&stream_id) {
-                Some(conn.stream.read(&mut buf).await)
-            } else {
-                None
-            }
-        };
-
-        match read_result {
-            Some(Ok(0)) => {
+        match read_half.read(&mut buf).await {
+            Ok(0) => {
                 // Connection closed
                 debug!("Stream {} closed by remote", stream_id);
                 let _ = relay.send(&TunnelMessage::Close { stream_id }).await;
-                let mut state = state.lock().await;
-                state.connections.remove(&stream_id);
                 break;
             }
-            Some(Ok(n)) => {
+            Ok(n) => {
                 // Send data to client via relay
                 let payload = Bytes::copy_from_slice(&buf[..n]);
                 if let Err(e) = relay
@@ -306,18 +298,12 @@ async fn read_from_connection(
                     break;
                 }
             }
-            Some(Err(e)) if e.kind() == ErrorKind::WouldBlock => {
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {
                 tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
             }
-            Some(Err(e)) => {
+            Err(e) => {
                 warn!("Read error on stream {}: {}", stream_id, e);
                 let _ = relay.send(&TunnelMessage::Close { stream_id }).await;
-                let mut state = state.lock().await;
-                state.connections.remove(&stream_id);
-                break;
-            }
-            None => {
-                // Stream was removed
                 break;
             }
         }

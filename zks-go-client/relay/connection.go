@@ -188,12 +188,15 @@ func (c *Connection) Send(msg protocol.TunnelMessage) error {
 
 	// Encode message
 	plaintext := msg.Encode()
+	fmt.Printf("[DEBUG] Send: Encoding message type=0x%02x, len=%d bytes\n", msg.Type(), len(plaintext))
 
 	// Encrypt
 	ciphertext, err := c.cipher.Encrypt(plaintext)
 	if err != nil {
+		fmt.Printf("[DEBUG] Send: Encryption FAILED: %v\n", err)
 		return fmt.Errorf("encryption failed: %w", err)
 	}
+	fmt.Printf("[DEBUG] Send: Encrypted to %d bytes (nonce: %x)\n", len(ciphertext), ciphertext[:12])
 
 	// Send as binary WebSocket message
 	return c.ws.WriteMessage(websocket.BinaryMessage, ciphertext)
@@ -207,25 +210,34 @@ func (c *Connection) Recv() (protocol.TunnelMessage, error) {
 	for {
 		msgType, data, err := c.ws.ReadMessage()
 		if err != nil {
+			fmt.Printf("[DEBUG] Recv: WebSocket read error: %v\n", err)
 			return nil, fmt.Errorf("read error: %w", err)
 		}
 
+		fmt.Printf("[DEBUG] Recv: Got message type=%d, len=%d bytes\n", msgType, len(data))
+
 		// Skip text messages (key exchange messages after initial handshake)
 		if msgType != websocket.BinaryMessage {
+			fmt.Printf("[DEBUG] Recv: Skipping non-binary message: %s\n", string(data))
 			continue
 		}
 
 		// Decrypt
+		fmt.Printf("[DEBUG] Recv: Decrypting %d bytes (nonce: %x)\n", len(data), data[:12])
 		plaintext, err := c.cipher.Decrypt(data)
 		if err != nil {
+			fmt.Printf("[DEBUG] Recv: Decryption FAILED: %v\n", err)
 			return nil, fmt.Errorf("decryption failed: %w", err)
 		}
+		fmt.Printf("[DEBUG] Recv: Decryption SUCCESS, plaintext=%d bytes, cmd=0x%02x\n", len(plaintext), plaintext[0])
 
 		// Decode message
 		msg, err := protocol.Decode(plaintext)
 		if err != nil {
+			fmt.Printf("[DEBUG] Recv: Decode FAILED: %v\n", err)
 			return nil, fmt.Errorf("decode failed: %w", err)
 		}
+		fmt.Printf("[DEBUG] Recv: Decoded message type: %T\n", msg)
 
 		return msg, nil
 	}

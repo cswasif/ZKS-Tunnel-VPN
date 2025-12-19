@@ -46,6 +46,7 @@ func (s *Server) Start(listenAddr string) error {
 	fmt.Println("   Configure your browser: SOCKS5 proxy =", listenAddr)
 
 	// Start relay receiver goroutine
+	fmt.Println("[DEBUG] Start: Launching relayReceiver goroutine...")
 	go s.relayReceiver()
 
 	// Accept connections
@@ -65,24 +66,33 @@ func (s *Server) Start(listenAddr string) error {
 
 // relayReceiver receives messages from relay and dispatches to streams
 func (s *Server) relayReceiver() {
+	fmt.Println("[DEBUG] relayReceiver: Started")
 	for s.running {
+		fmt.Println("[DEBUG] relayReceiver: Waiting for message...")
 		msg, err := s.conn.Recv()
 		if err != nil {
+			fmt.Printf("[DEBUG] relayReceiver: Recv error: %v\n", err)
 			fmt.Printf("Relay receive error: %v\n", err)
 			break
 		}
+		fmt.Printf("[DEBUG] relayReceiver: Got message type: %T\n", msg)
 
 		var streamID protocol.StreamID
 		switch m := msg.(type) {
 		case *protocol.ConnectSuccess:
 			streamID = m.StreamID
+			fmt.Printf("[DEBUG] relayReceiver: ConnectSuccess for stream %d\n", streamID)
 		case *protocol.Data:
 			streamID = m.StreamID
+			fmt.Printf("[DEBUG] relayReceiver: Data for stream %d, %d bytes\n", streamID, len(m.Payload))
 		case *protocol.Close:
 			streamID = m.StreamID
+			fmt.Printf("[DEBUG] relayReceiver: Close for stream %d\n", streamID)
 		case *protocol.ErrorReply:
 			streamID = m.StreamID
+			fmt.Printf("[DEBUG] relayReceiver: ErrorReply for stream %d: %s\n", streamID, m.Message)
 		default:
+			fmt.Printf("[DEBUG] relayReceiver: Skipping unknown message type\n")
 			continue
 		}
 
@@ -90,12 +100,18 @@ func (s *Server) relayReceiver() {
 		ch, ok := s.streams[streamID]
 		s.streamsMu.RUnlock()
 		if ok {
+			fmt.Printf("[DEBUG] relayReceiver: Dispatching to stream %d channel\n", streamID)
 			select {
 			case ch <- msg:
+				fmt.Printf("[DEBUG] relayReceiver: Message dispatched to stream %d\n", streamID)
 			default:
+				fmt.Printf("[DEBUG] relayReceiver: Channel full for stream %d, dropping\n", streamID)
 			}
+		} else {
+			fmt.Printf("[DEBUG] relayReceiver: No channel found for stream %d\n", streamID)
 		}
 	}
+	fmt.Println("[DEBUG] relayReceiver: Exited loop")
 }
 
 // handleClient handles a single SOCKS5 client connection

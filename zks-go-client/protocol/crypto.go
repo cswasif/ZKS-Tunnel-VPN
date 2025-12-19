@@ -111,12 +111,11 @@ func NewKeyExchange(roomID string) (*KeyExchange, error) {
 		return nil, err
 	}
 
-	// Clamp private key for X25519
-	ke.privateKey[0] &= 248
-	ke.privateKey[31] &= 127
-	ke.privateKey[31] |= 64
+	// NOTE: Do NOT manually clamp the private key here!
+	// The curve25519 library performs clamping internally during ScalarBaseMult.
+	// Manual clamping would cause double-clamping and key mismatch with Rust.
 
-	// Derive public key
+	// Derive public key - ScalarBaseMult handles clamping internally
 	curve25519.ScalarBaseMult(&ke.PublicKey, &ke.privateKey)
 
 	return ke, nil
@@ -134,7 +133,8 @@ func (ke *KeyExchange) GetPublicKeyHex() string {
 }
 
 // ComputeSharedSecret computes the shared secret from peer's public key
-// and derives the final encryption key using HKDF-SHA256
+// and derives the final encryption key using HKDF-SHA256 + SHA256 counter mode
+// This MUST match the Rust implementation in key_exchange.rs
 func (ke *KeyExchange) ComputeSharedSecret(peerPubKeyBytes []byte) ([32]byte, error) {
 	if len(peerPubKeyBytes) != 32 {
 		return [32]byte{}, errors.New("invalid peer public key length")
@@ -147,19 +147,36 @@ func (ke *KeyExchange) ComputeSharedSecret(peerPubKeyBytes []byte) ([32]byte, er
 	var sharedSecret [32]byte
 	curve25519.ScalarMult(&sharedSecret, &ke.privateKey, &peerPubKey)
 
-	// Derive encryption key using HKDF-SHA256
+	// Step 1: Derive 32-byte SEED using HKDF-SHA256
 	// Salt: room_id bytes
 	// Info: "ZKS-VPN v1.0 encryption key"
 	salt := []byte(ke.roomID)
 	info := []byte("ZKS-VPN v1.0 encryption key")
 
 	hkdfReader := hkdf.New(sha256.New, sharedSecret[:], salt, info)
-	var encryptionKey [32]byte
-	if _, err := io.ReadFull(hkdfReader, encryptionKey[:]); err != nil {
+	var seed [32]byte
+	if _, err := io.ReadFull(hkdfReader, seed[:]); err != nil {
 		return [32]byte{}, err
 	}
 
-	return encryptionKey, nil
+	// Step 2: Expand seed to 1MB using SHA256 counter mode (matches Rust)
+	// This creates a cryptographically secure stream from the seed
+	h := sha256.New()
+	var counter uint64 = 0
+
+	// We only need the first 32 bytes, so just do first iteration
+	h.Write(seed[:])
+	// Rust uses little-endian counter
+	counterBytes := make([]byte, 8)
+	binary.LittleEndian.PutUint64(counterBytes, counter)
+	h.Write(counterBytes)
+	
+	encryptionKey := h.Sum(nil)
+	
+	var result [32]byte
+	copy(result[:], encryptionKey[:32])
+
+	return result, nil
 }
 
 // ParseHexPublicKey parses a hex-encoded public key
