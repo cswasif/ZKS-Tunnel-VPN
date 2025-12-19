@@ -70,32 +70,27 @@ func StartTUN(relayConn *relay.Connection) error {
 				return
 			}
 
+			// Collect packets into a batch
+			batch := make([][]byte, 0, n)
 			for i := 0; i < n; i++ {
 				if sizes[i] > 0 {
 					// Zero-Copy Optimization:
-					// Instead of allocating a new slice with make([]byte, sizes[i]),
-					// we copy into a pooled buffer.
-					// Ideally, we would read directly into pooled buffers, but tun.Read 
-					// requires a fixed slice of slices.
-					// So we copy from the static read buffer -> pooled buffer.
-					// This is still better than allocating a new slice every time because
-					// the pooled buffer is reused.
-					
+					// Copy into pooled buffer for batch sending
 					pooledBuf := protocol.GetBuffer()
-					// Copy data into pooled buffer
 					copy(pooledBuf, buffs[i][:sizes[i]])
-					
-					// Slice it to correct length
 					packet := pooledBuf[:sizes[i]]
-					
-					// Wrap in IpPacket
-					msg := &protocol.IpPacket{Payload: packet}
-					
-					// Send to relay (async)
-					if err := relayConn.Send(msg); err != nil {
-						// If send fails, we must return the buffer manually
-						// If send succeeds, the writePump is responsible for returning it
-						protocol.PutBuffer(pooledBuf)
+					batch = append(batch, packet)
+				}
+			}
+
+			// Send entire batch as a single WebSocket message
+			// This reduces overhead by 16x compared to individual sends
+			if len(batch) > 0 {
+				msg := &protocol.BatchIpPacket{Packets: batch}
+				if err := relayConn.Send(msg); err != nil {
+					// If send fails, return all buffers in batch
+					for _, pkt := range batch {
+						protocol.PutBuffer(pkt)
 					}
 				}
 			}
@@ -111,9 +106,20 @@ func StartTUN(relayConn *relay.Connection) error {
 				return
 			}
 
-			// Check if it's an IP packet
+			// Handle BatchIpPacket (multiple packets in one message)
+			if batchPacket, ok := msg.(*protocol.BatchIpPacket); ok {
+				// Write all packets in batch to TUN
+				if len(batchPacket.Packets) > 0 {
+					_, err := dev.Write(batchPacket.Packets, 0)
+					if err != nil {
+						log.Printf("❌ TUN batch write error: %v", err)
+					}
+				}
+				continue
+			}
+
+			// Handle single IpPacket (backwards compatibility)
 			if ipPacket, ok := msg.(*protocol.IpPacket); ok {
-				// Write to TUN
 				if len(ipPacket.Payload) > 0 {
 					_, err := dev.Write([][]byte{ipPacket.Payload}, 0)
 					if err != nil {

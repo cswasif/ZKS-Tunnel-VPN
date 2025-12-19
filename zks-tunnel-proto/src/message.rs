@@ -46,6 +46,8 @@ pub enum CommandType {
     ChainAck = 0x11,
     /// Raw IP packet for VPN mode (layer 3) - encrypted with ZKS keys
     IpPacket = 0x20,
+    /// Batch of IP packets for high-throughput VPN mode (reduces WebSocket overhead)
+    BatchIpPacket = 0x21,
 }
 
 impl TryFrom<u8> for CommandType {
@@ -68,6 +70,7 @@ impl TryFrom<u8> for CommandType {
             0x10 => Ok(Self::ChainForward),
             0x11 => Ok(Self::ChainAck),
             0x20 => Ok(Self::IpPacket),
+            0x21 => Ok(Self::BatchIpPacket),
             _ => Err(crate::ProtoError::InvalidCommand(value)),
         }
     }
@@ -176,6 +179,12 @@ pub enum TunnelMessage {
     IpPacket {
         /// Full IP packet payload (encrypted with ZKS keys before wire)
         payload: Bytes,
+    },
+    /// Batch of IP packets for high-throughput VPN mode
+    /// Reduces WebSocket message overhead by sending multiple packets in one message
+    BatchIpPacket {
+        /// Multiple IP packet payloads
+        packets: Vec<Bytes>,
     },
 }
 
@@ -327,6 +336,14 @@ impl TunnelMessage {
                 buf.put_u8(CommandType::IpPacket as u8);
                 buf.put_u32(payload.len() as u32);
                 buf.put_slice(payload);
+            }
+            TunnelMessage::BatchIpPacket { packets } => {
+                buf.put_u8(CommandType::BatchIpPacket as u8);
+                buf.put_u16(packets.len() as u16);
+                for p in packets {
+                    buf.put_u32(p.len() as u32);
+                    buf.put_slice(p);
+                }
             }
         }
 
@@ -639,6 +656,30 @@ impl TunnelMessage {
                     Bytes::copy_from_slice(&data[cursor.position() as usize..][..payload_len]);
 
                 Ok(TunnelMessage::IpPacket { payload })
+            }
+            CommandType::BatchIpPacket => {
+                if cursor.remaining() < 2 {
+                    return Err(crate::ProtoError::InsufficientData);
+                }
+                let count = cursor.get_u16() as usize;
+                let mut packets = Vec::with_capacity(count);
+
+                for _ in 0..count {
+                    if cursor.remaining() < 4 {
+                        return Err(crate::ProtoError::InsufficientData);
+                    }
+                    let payload_len = cursor.get_u32() as usize;
+
+                    if cursor.remaining() < payload_len {
+                        return Err(crate::ProtoError::InsufficientData);
+                    }
+                    let payload =
+                        Bytes::copy_from_slice(&data[cursor.position() as usize..][..payload_len]);
+                    cursor.advance(payload_len);
+                    packets.push(payload);
+                }
+
+                Ok(TunnelMessage::BatchIpPacket { packets })
             }
         }
     }
