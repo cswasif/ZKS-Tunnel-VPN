@@ -148,6 +148,64 @@ func configureInterface(ifaceName, ip, netmask string) error {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("netsh set address failed: %v, output: %s", err, out)
 	}
+	
+	// Configure DNS to prevent DNS leaks
+	if err := configureDNS(ifaceName); err != nil {
+		log.Printf("⚠️ DNS configuration warning: %v", err)
+		// Non-fatal - VPN will work but may have DNS leaks
+	}
+	
+	return nil
+}
+
+// configureDNS implements modern Windows DNS leak prevention using NRPT
+func configureDNS(ifaceName string) error {
+	log.Printf("🔒 Configuring DNS leak prevention (NRPT)...")
+	
+	// Step 1: Set DNS servers on TUN interface to Cloudflare/Google DNS
+	dnsServers := []string{"1.1.1.1", "8.8.8.8"}
+	
+	for i, dns := range dnsServers {
+		var cmd *exec.Cmd
+		if i == 0 {
+			// Primary DNS
+			cmd = exec.Command("powershell", "-NoProfile", "-Command", 
+				fmt.Sprintf("Set-DnsClientServerAddress -InterfaceAlias '%s' -ServerAddresses '%s'", ifaceName, dns))
+		} else {
+			// Add secondary DNS
+			cmd = exec.Command("netsh", "interface", "ipv4", "add", "dns", ifaceName, dns, "index="+fmt.Sprint(i+1))
+		}
+		
+		if out, err := cmd.CombinedOutput(); err != nil {
+			log.Printf("⚠️ Failed to set DNS server %s: %v, output: %s", dns, err, out)
+		}
+	}
+	
+	// Step 2: Add NRPT rule to route ALL DNS queries through VPN interface
+	// This is the modern Windows approach used by Always On VPN
+	// NRPT = Name Resolution Policy Table
+	nrptCmd := fmt.Sprintf(`
+		# Remove existing NRPT rules for this namespace
+		Get-DnsClientNrptRule | Where-Object {$_.Namespace -eq '.'} | Remove-DnsClientNrptRule -Force -ErrorAction SilentlyContinue
+		
+		# Add NRPT rule for all DNS queries (namespace = '.')
+		# This forces ALL DNS through the VPN's DNS servers
+		Add-DnsClientNrptRule -Namespace '.' -NameServers '%s','%s' -Comment 'ZKS-VPN DNS Leak Prevention'
+	`, dnsServers[0], dnsServers[1])
+	
+	cmd := exec.Command("powershell", "-NoProfile", "-Command", nrptCmd)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		log.Printf("⚠️ NRPT rule failed (non-fatal): %v, output: %s", err, out)
+		// Fallback approach: Clear DNS cache
+		exec.Command("ipconfig", "/flushdns").Run()
+		return fmt.Errorf("NRPT not supported, using basic DNS config")
+	}
+	
+	log.Printf("✅ DNS leak prevention configured (NRPT active)")
+	
+	// Flush DNS cache to apply changes immediately
+	exec.Command("ipconfig", "/flushdns").Run()
+	
 	return nil
 }
 
