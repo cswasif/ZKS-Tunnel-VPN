@@ -244,50 +244,13 @@ func configureRouting(ifaceName string) error {
 	}
 	log.Printf("🌐 Original gateway: %s", originalGateway)
 
-	// 3. Add bypass routes for relay server IPs
-	// Resolve relay hostname to get exact IPs
-	relayHost := "zks-tunnel-relay.md-wasif-faisal.workers.dev"
-	ips, err := net.LookupHost(relayHost)
-	if err != nil {
-		log.Printf("⚠️ Failed to resolve relay host %s: %v", relayHost, err)
-	}
+	// NOTE: Relay bypass routes are now handled in main.go BEFORE TUN creation
+	// This is done by addRelayBypassRoutes() which resolves the relay hostname
+	// and adds specific /32 routes for only those IPs.
+	// DO NOT add broad Cloudflare bypass routes here (104.16.0.0/12 etc.)
+	// as they cause IP leaks by bypassing IP check sites.
 
-	bypassIPs := []string{
-		"104.16.0.0/12",    // Cloudflare main range
-		"172.64.0.0/13",    // Cloudflare range
-		"131.0.72.0/22",    // Cloudflare range
-	}
-	// Add resolved IPs to bypass list
-	for _, ip := range ips {
-		if strings.Contains(ip, ".") { // IPv4 only
-			bypassIPs = append(bypassIPs, ip+"/32")
-		}
-	}
-
-	if originalGateway != "" {
-		for _, bypassIP := range bypassIPs {
-			log.Printf("🔓 Adding bypass route: %s -> %s", bypassIP, originalGateway)
-			// Use route.exe for reliability
-			// route add <IP> mask <MASK> <GATEWAY> metric 1
-			parts := strings.Split(bypassIP, "/")
-			ip := parts[0]
-			// Calculate mask from prefix length (simple lookup for common ones)
-			mask := "255.255.255.255" // Default for /32
-			if len(parts) > 1 {
-				switch parts[1] {
-				case "12": mask = "255.240.0.0"
-				case "13": mask = "255.248.0.0"
-				case "22": mask = "255.255.252.0"
-				}
-			}
-			
-			exec.Command("route", "add", ip, "mask", mask, originalGateway, "metric", "1").Run()
-		}
-	} else {
-		log.Printf("❌ CRITICAL: No default gateway found! VPN routing loop likely!")
-	}
-
-	// 4. Add VPN routes (0.0.0.0/1 and 128.0.0.0/1) pointing to TUN interface
+	// 3. Add VPN routes (0.0.0.0/1 and 128.0.0.0/1) pointing to TUN interface
 	routes := []string{
 		"0.0.0.0/1",
 		"128.0.0.0/1",
