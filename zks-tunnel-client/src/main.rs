@@ -20,6 +20,7 @@ use tracing::{error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 
 mod chain;
+mod entry_node;
 mod exit_peer;
 mod http_proxy;
 mod key_exchange;
@@ -62,6 +63,9 @@ pub enum Mode {
     /// Exit Peer VPN mode - Layer 3 VPN packet forwarding (TUN device)
     #[value(name = "exit-peer-vpn")]
     ExitPeerVpn,
+    /// Entry Node mode - UDP relay for Multi-Hop VPN (first hop)
+    #[value(name = "entry-node")]
+    EntryNode,
 }
 
 /// ZKS-Tunnel VPN Client
@@ -133,6 +137,14 @@ struct Args {
     /// Upstream SOCKS5 proxy (e.g., 127.0.0.1:9050) to route traffic through
     #[arg(long)]
     proxy: Option<String>,
+
+    /// Exit Node address for Entry Node mode (e.g., 213.35.103.204:51820)
+    #[arg(long, default_value = "213.35.103.204:51820")]
+    exit_node: String,
+
+    /// Listen port for Entry Node mode (UDP)
+    #[arg(long, default_value_t = 51820)]
+    listen_port: u16,
 }
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -192,6 +204,18 @@ async fn main() -> Result<(), BoxError> {
                 info!("Running Exit Peer in SOCKS5/HTTP mode (no TUN device)");
                 return exit_peer::run_exit_peer(&args.relay, &args.vernam, &room_id).await;
             }
+        }
+        Mode::EntryNode => {
+            use entry_node::EntryNodeConfig;
+            let listen_addr: std::net::SocketAddr = format!("0.0.0.0:{}", args.listen_port).parse()?;
+            let exit_node_addr: std::net::SocketAddr = args.exit_node.parse().map_err(|_| {
+                error!("Invalid exit node address: {}", args.exit_node);
+                "Invalid exit node address"
+            })?;
+            return entry_node::run_entry_node(EntryNodeConfig {
+                listen_addr,
+                exit_node_addr,
+            }).await;
         }
         _ => {}
     }
@@ -268,6 +292,11 @@ fn print_banner(args: &Args) {
                 "║  VPN IP: {}                                          ",
                 args.vpn_address
             );
+        }
+        Mode::EntryNode => {
+            info!("║  Mode:   Entry Node (UDP Relay, Multi-Hop VPN)              ║");
+            info!("║  Listen: 0.0.0.0:{}                                      ", args.listen_port);
+            info!("║  Exit:   {}  ", args.exit_node);
         }
     }
 
