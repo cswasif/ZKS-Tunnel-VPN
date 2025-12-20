@@ -572,8 +572,9 @@ pub async fn run_exit_peer_vpn(
         let running_clone2 = running.clone();
         let tun_to_relay = tokio::spawn(async move {
             let mut buf = vec![0u8; 2048];
-            // Increased to 8000 to match Go client (1TB/day limit)
-            let batch_size = 8000;
+            // WireGuard IdealBatchSize = 128 (industry standard)
+            // Reference: https://github.com/WireGuard/wireguard-go
+            let batch_size = 128;
             let mut batch = Vec::with_capacity(batch_size);
 
             while running_clone2.load(Ordering::SeqCst) {

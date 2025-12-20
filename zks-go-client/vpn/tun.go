@@ -17,7 +17,9 @@ const (
 	tunIP            = "10.0.85.1"
 	tunNetmask       = "255.255.255.0"
 	mtu              = 1420
-	batchSize        = 8000 // Ultra Mode: ~1TB/day on Cloudflare Free Tier
+	// WireGuard-Go uses IdealBatchSize = 128 for optimal performance
+	// Reference: https://github.com/WireGuard/wireguard-go/blob/master/conn/bind_std.go
+	batchSize = 128
 )
 
 // StartTUN creates the TUN device and starts processing packets
