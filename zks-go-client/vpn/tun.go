@@ -250,10 +250,15 @@ func configureRouting(ifaceName string) error {
 			log.Printf("⚠️ netsh route add failed: %v, output: %s. Trying route.exe...", err, out)
 			
 			// Fallback to route.exe
-			cmd = exec.Command("route", "add", network, "mask", mask, tunIP, "IF", ifIndex)
+			// CRITICAL FIX: Use 0.0.0.0 as gateway (not tunIP) for interface-based routing
+			// Add METRIC 1 to ensure VPN routes take precedence over default route
+			cmd = exec.Command("route", "add", network, "mask", mask, "0.0.0.0", "IF", ifIndex, "METRIC", "1")
 			if out, err := cmd.CombinedOutput(); err != nil {
-				return fmt.Errorf("route add failed: %v, output: %s", err, out)
+				log.Printf("❌ route.exe also failed: %v, output: %s", err, out)
+				// Continue to next route instead of failing completely
+				continue
 			}
+			log.Printf("✅ route.exe succeeded for %s", route)
 		}
 	}
 
