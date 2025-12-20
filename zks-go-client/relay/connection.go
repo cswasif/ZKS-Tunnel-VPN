@@ -129,17 +129,9 @@ func (c *Connection) performKeyExchange() error {
 				return fmt.Errorf("invalid peer public key: %w", err)
 			}
 			
-			// If we are Client, we wait for Exit Peer to send first (which we just did above)
-			// If we are Exit Peer, we might need to send ours after receiving (but we sent ours first above)
-			// The protocol is symmetric enough here.
-			
-			// Send ACK
-			ackMsg := KeyExchangeMessage{Type: "key_exchange_ack", Success: true}
-			ackJSON, _ := json.Marshal(ackMsg)
-			if err := c.ws.WriteMessage(websocket.TextMessage, ackJSON); err != nil {
-				return fmt.Errorf("failed to send ack: %w", err)
-			}
-
+			// CRITICAL FIX: Break immediately after receiving peer's public key
+			// Rust implementation doesn't send or expect ACK messages
+			// The original code sent an ACK and waited in loop, causing deadlock
 			break
 		}
 	}
