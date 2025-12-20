@@ -1,1 +1,183 @@
-//! Exit Node UDP Mode for Multi-Hop VPN\n//!\n//! Second hop in the Faisal Swarm multi-hop topology.\n//! Accepts UDP connections from Entry Node (VPS1) and forwards to Internet.\n\nuse tokio::net::UdpSocket;\nuse tracing::{debug, error, info};\n\n/// Run as Exit Node in UDP mode (Multi-Hop - Second Hop)\n///\n/// Instead of WebSocket from relay, accepts UDP connections from Entry Node (VPS1).\n/// Creates TUN device and forwards IP packets to/from Internet.\npub async fn run_exit_node_udp(\n    listen_port: u16,\n) -\u003e Result\u003c(), Box\u003cdyn std::error::Error + Send + Sync\u003e\u003e {\n    info!(\"╔══════════════════════════════════════════════════════════════╗\");\n    info!(\"║      ZKS Exit Node UDP - Multi-Hop Second Hop                ║\");\n    info!(\"╠══════════════════════════════════════════════════════════════╣\");\n    info!(\"║  Listen: 0.0.0.0:{}                                       \", listen_port);\n    info!(\"║  Mode:   Accept UDP from Entry Node                          ║\");\n    info!(\"╚══════════════════════════════════════════════════════════════╝\");\n\n    // Create TUN device for packet forwarding (10.0.85.2 for exit peer)\n    info!(\"Creating TUN device for VPN forwarding...\");\n\n    let device = tun_rs::DeviceBuilder::new()\n        .ipv4(std::net::Ipv4Addr::new(10, 0, 85, 2), 24, None)\n        .mtu(1400)\n        .build_async()?;\n\n    info!(\"✅ TUN device created (10.0.85.2/24)\");\n\n    // Enable IP forwarding on Linux\n    #[cfg(target_os = \"linux\")]\n    {\n        let _ = std::process::Command::new(\"sysctl\")\n            .args([\"-w\", \"net.ipv4.ip_forward=1\"])\n            .output();\n        info!(\"Enabled IP forwarding\");\n\n        // Setup NAT\n        let _ = std::process::Command::new(\"iptables\")\n            .args([\n                \"-t\",\n                \"nat\",\n                \"-A\",\n                \"POSTROUTING\",\n                \"-s\",\n                \"10.0.85.0/24\",\n                \"-j\",\n                \"MASQUERADE\",\n            ])\n            .output();\n        info!(\"Configured NAT for 10.0.85.0/24\");\n    }\n\n    // Bind UDP socket\n    let socket = std::sync::Arc::new(UdpSocket::bind(format!(\"0.0.0.0:{}\", listen_port)).await?);\n    info!(\"✅ UDP socket bound to 0.0.0.0:{}\", listen_port);\n\n    // Track Entry Node address (will be set when we receive first packet)\n    let entry_node_addr = std::sync::Arc::new(tokio::sync::RwLock::new(None::\u003cstd::net::SocketAddr\u003e));\n\n    info!(\"⏳ Waiting for Entry Node connection...\");\n\n    // Task: TUN → UDP (outbound to Internet → back to Entry Node)\n    let tun_to_udp = {\n        let device = device.clone();\n        let socket = socket.clone();\n        let entry_node_addr = entry_node_addr.clone();\n\n        tokio::spawn(async move {\n            let mut buf = vec![0u8; 65535];\n\n            loop {\n                match device.recv(\u0026mut buf).await {\n                    Ok(n) =\u003e {\n                        // Read packet from TUN (Internet response)\n                        let packet = \u0026buf[..n];\n\n                        // Send to Entry Node if connected\n                        let addr_lock = entry_node_addr.read().await;\n                        if let Some(addr) = *addr_lock {\n                            if let Err(e) = socket.send_to(packet, addr).await {\n                                error!(\"Failed to send to Entry Node: {}\", e);\n                            } else {\n                                debug!(\"← Internet → Entry: {} bytes\", n);\n                            }\n                        }\n                    }\n                    Err(e) =\u003e {\n                        error!(\"TUN read error: {}\", e);\n                        break;\n                    }\n                }\n            }\n        })\n    };\n\n    // Task: UDP → TUN (inbound from Entry Node → to Internet)\n    let udp_to_tun = {\n        let device = device.clone();\n        let socket = socket.clone();\n        let entry_node_addr = entry_node_addr.clone();\n\n        tokio::spawn(async move {\n            let mut buf = vec![0u8; 65535];\n\n            loop {\n                match socket.recv_from(\u0026mut buf).await {\n                    Ok((n, addr)) =\u003e {\n                        // First packet from Entry Node - remember address\n                        {\n                            let mut addr_lock = entry_node_addr.write().await;\n                            if addr_lock.is_none() {\n                                info!(\"✅ Entry Node connected: {}\", addr);\n                                *addr_lock = Some(addr);\n                            }\n                        }\n\n                        // Forward packet to TUN (to Internet)\n                        let packet = \u0026buf[..n];\n                        if let Err(e) = device.send(packet).await {\n                            error!(\"TUN write error: {}\", e);\n                        } else {\n                            debug!(\"→ Entry → Internet: {} bytes\", n);\n                        }\n                    }\n                    Err(e) =\u003e {\n                        error!(\"UDP recv error: {}\", e);\n                        break;\n                    }\n                }\n            }\n        })\n    };\n\n    // Wait for both tasks\n    tokio::select! {\n        _ = tun_to_udp =\u003e {\n            error!(\"TUN to UDP task ended\");\n        }\n        _ = udp_to_tun =\u003e {\n            error!(\"UDP to TUN task ended\");\n        }\n    }\n\n    Ok(())\n}\n
+//! Exit Node UDP Mode for Multi-Hop VPN
+//!
+//! Second hop in the Faisal Swarm multi-hop topology.
+//! Accepts UDP connections from Entry Node (VPS1) and forwards to Internet.
+//!
+//! Architecture:
+//! ```
+//! [Client] <--UDP--> [Entry Node VPS1] <--UDP--> [Exit Node VPS2] <---> [Internet]
+//!                    (0.0.0.0:51820)             (0.0.0.0:51820)
+//! ```
+//!
+//! Usage:
+//!   sudo zks-vpn --mode exit-node-udp --listen-port 51820
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::net::UdpSocket;
+use tokio::sync::RwLock;
+use tracing::{debug, error, info};
+
+/// Run as Exit Node in UDP mode (Multi-Hop - Second Hop)
+///
+/// Instead of WebSocket from relay, accepts UDP connections from Entry Node (VPS1).
+/// Creates TUN device and forwards IP packets to/from Internet.
+///
+/// # Arguments
+/// * `listen_port` - UDP port to listen on (default: 51820)
+#[cfg(feature = "vpn")]
+pub async fn run_exit_node_udp(
+    listen_port: u16,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║      ZKS Exit Node UDP - Faisal Swarm Second Hop             ║");
+    info!("╠══════════════════════════════════════════════════════════════╣");
+    info!("║  Listen: 0.0.0.0:{:<47} ║", listen_port);
+    info!("║  Mode:   Accept UDP from Entry Node                          ║");
+    info!("╚══════════════════════════════════════════════════════════════╝");
+
+    // Create TUN device for packet forwarding (10.0.85.2 for exit node)
+    info!("Creating TUN device for VPN forwarding...");
+
+    let device = tun_rs::DeviceBuilder::new()
+        .ipv4(std::net::Ipv4Addr::new(10, 0, 85, 2), 24, None)
+        .mtu(1400)
+        .build_async()?;
+
+    info!("✅ TUN device created (10.0.85.2/24)");
+
+    // Enable IP forwarding and NAT on Linux
+    #[cfg(target_os = "linux")]
+    {
+        // Enable IP forwarding
+        let forward_result = std::process::Command::new("sysctl")
+            .args(["-w", "net.ipv4.ip_forward=1"])
+            .output();
+        match forward_result {
+            Ok(_) => info!("✅ IP forwarding enabled"),
+            Err(e) => error!("Failed to enable IP forwarding: {}", e),
+        }
+
+        // Setup NAT with MASQUERADE
+        let nat_result = std::process::Command::new("iptables")
+            .args([
+                "-t",
+                "nat",
+                "-A",
+                "POSTROUTING",
+                "-s",
+                "10.0.85.0/24",
+                "-j",
+                "MASQUERADE",
+            ])
+            .output();
+        match nat_result {
+            Ok(_) => info!("✅ NAT configured for 10.0.85.0/24"),
+            Err(e) => error!("Failed to configure NAT: {}", e),
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        info!("⚠️ Windows: Manual NAT/ICS configuration may be required");
+    }
+
+    // Bind UDP socket
+    let bind_addr = format!("0.0.0.0:{}", listen_port);
+    let socket = Arc::new(UdpSocket::bind(&bind_addr).await?);
+    info!("✅ UDP socket bound to {}", bind_addr);
+
+    // Track Entry Node address (set when we receive first packet)
+    let entry_node_addr: Arc<RwLock<Option<SocketAddr>>> = Arc::new(RwLock::new(None));
+
+    info!("⏳ Waiting for Entry Node connection...");
+
+    // Clone Arc references for tasks
+    let device = Arc::new(device);
+    let device_reader = device.clone();
+    let device_writer = device.clone();
+    let socket_tx = socket.clone();
+    let socket_rx = socket.clone();
+    let entry_addr_tx = entry_node_addr.clone();
+    let entry_addr_rx = entry_node_addr.clone();
+
+    // Task: TUN → UDP (Internet responses → back to Entry Node)
+    let tun_to_udp = tokio::spawn(async move {
+        let mut buf = vec![0u8; 65535];
+
+        loop {
+            match device_reader.recv(&mut buf).await {
+                Ok(n) => {
+                    // Read packet from TUN (response from Internet)
+                    let packet = &buf[..n];
+
+                    // Send to Entry Node if connected
+                    let addr_lock = entry_addr_tx.read().await;
+                    if let Some(addr) = *addr_lock {
+                        if let Err(e) = socket_tx.send_to(packet, addr).await {
+                            error!("Failed to send to Entry Node: {}", e);
+                        } else {
+                            debug!("← Internet → Entry: {} bytes", n);
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("TUN read error: {}", e);
+                    break;
+                }
+            }
+        }
+    });
+
+    // Task: UDP → TUN (Entry Node packets → to Internet)
+    let udp_to_tun = tokio::spawn(async move {
+        let mut buf = vec![0u8; 65535];
+
+        loop {
+            match socket_rx.recv_from(&mut buf).await {
+                Ok((n, addr)) => {
+                    // First packet from Entry Node - remember address
+                    {
+                        let mut addr_lock = entry_addr_rx.write().await;
+                        if addr_lock.is_none() {
+                            info!("✅ Entry Node connected: {}", addr);
+                            *addr_lock = Some(addr);
+                        }
+                    }
+
+                    // Forward packet to TUN (to Internet via NAT)
+                    let packet = &buf[..n];
+                    if let Err(e) = device_writer.send(packet).await {
+                        error!("TUN write error: {}", e);
+                    } else {
+                        debug!("→ Entry → Internet: {} bytes", n);
+                    }
+                }
+                Err(e) => {
+                    error!("UDP recv error: {}", e);
+                    break;
+                }
+            }
+        }
+    });
+
+    // Wait for either task to complete (or error)
+    tokio::select! {
+        _ = tun_to_udp => {
+            error!("TUN to UDP task ended");
+        }
+        _ = udp_to_tun => {
+            error!("UDP to TUN task ended");
+        }
+    }
+
+    Ok(())
+}
+
+// Stub when vpn feature is not enabled
+#[cfg(not(feature = "vpn"))]
+pub async fn run_exit_node_udp(
+    _listen_port: u16,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    Err("Exit Node UDP mode requires VPN feature. Build with: cargo build --features vpn".into())
+}

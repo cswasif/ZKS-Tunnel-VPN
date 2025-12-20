@@ -162,6 +162,13 @@ pub enum KeyExchangeMessage {
         /// Indicates successful key derivation
         success: bool,
     },
+    /// Share swarm entropy from Client to Exit Peer
+    /// Client fetches from EntropyPool and sends to Exit Peer so both have same key
+    #[serde(rename = "shared_entropy")]
+    SharedEntropy {
+        /// Hex-encoded entropy bytes (32 bytes)
+        entropy: String,
+    },
 }
 
 impl KeyExchangeMessage {
@@ -172,10 +179,25 @@ impl KeyExchangeMessage {
         }
     }
 
+    /// Create a shared entropy message
+    pub fn new_shared_entropy(entropy_bytes: &[u8]) -> Self {
+        Self::SharedEntropy {
+            entropy: hex::encode(entropy_bytes),
+        }
+    }
+
     /// Parse public key from message
     pub fn parse_public_key(&self) -> Option<Vec<u8>> {
         match self {
             Self::PublicKey { public_key } => hex::decode(public_key).ok(),
+            _ => None,
+        }
+    }
+
+    /// Parse shared entropy from message
+    pub fn parse_shared_entropy(&self) -> Option<Vec<u8>> {
+        match self {
+            Self::SharedEntropy { entropy } => hex::decode(entropy).ok(),
             _ => None,
         }
     }

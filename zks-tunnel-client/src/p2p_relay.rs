@@ -156,6 +156,17 @@ impl WasifVernam {
         info!("Fetched 32 bytes of Swarm Entropy from zks-key worker");
         Ok(())
     }
+
+    /// Set the remote key directly (used when receiving SharedEntropy from peer)
+    pub fn set_remote_key(&mut self, key: Vec<u8>) {
+        info!("Applied {} bytes of Swarm Entropy from peer", key.len());
+        self.remote_key = key;
+    }
+
+    /// Get a copy of the remote key (for sharing with peer)
+    pub fn get_remote_key(&self) -> &[u8] {
+        &self.remote_key
+    }
 }
 
 /// Entropy Tax Payer: Contributes randomness to the Swarm
@@ -387,28 +398,76 @@ impl P2PRelay {
         if encryption_key.len() >= 32 {
             shared_secret.copy_from_slice(&encryption_key[0..32]);
         }
-        let keys = WasifVernam::new(shared_secret);
+        let mut keys = WasifVernam::new(shared_secret);
 
-        // Optionally XOR with vernam key for additional security (defense in depth)
+        // === Swarm Entropy Synchronization ===
+        // Client fetches entropy and shares with Exit Peer to ensure both have same key
         if !vernam_url.is_empty() {
-            // DISABLED: Entropy Tax Payer causes 404 errors (endpoint doesn't exist yet)
-            // TODO: Re-enable once /entropy endpoint is implemented on the relay worker
-            // let tax_payer = EntropyTaxPayer::new(vernam_url.to_string());
-            // tax_payer.start_background_task();
-            // info!("Started Entropy Tax Payer (contributing randomness to Swarm)");
+            match role {
+                PeerRole::Client => {
+                    // Client: Fetch entropy from relay and send to Exit Peer
+                    info!("🎲 Fetching Swarm Entropy from relay...");
+                    match keys.fetch_remote_key(vernam_url).await {
+                        Ok(()) => {
+                            // Send the entropy to Exit Peer
+                            let entropy_msg =
+                                KeyExchangeMessage::new_shared_entropy(keys.get_remote_key());
+                            writer.send(Message::Text(entropy_msg.to_json())).await?;
+                            info!("✅ Sent Swarm Entropy to Exit Peer (Double-Key active)");
+                        }
+                        Err(e) => {
+                            warn!("Failed to fetch swarm entropy: {}. Using ChaCha20 only.", e);
+                        }
+                    }
+                }
+                PeerRole::ExitPeer => {
+                    // Exit Peer: Wait for SharedEntropy from Client
+                    info!("⏳ Waiting for Swarm Entropy from Client...");
+                    let entropy_timeout =
+                        tokio::time::timeout(Duration::from_secs(10), async {
+                            while let Some(msg) = reader.next().await {
+                                match msg? {
+                                    Message::Text(text) => {
+                                        if let Some(ke_msg) = KeyExchangeMessage::from_json(&text) {
+                                            if let Some(entropy_bytes) =
+                                                ke_msg.parse_shared_entropy()
+                                            {
+                                                return Ok::<
+                                                    _,
+                                                    Box<dyn std::error::Error + Send + Sync>,
+                                                >(
+                                                    entropy_bytes
+                                                );
+                                            }
+                                        }
+                                        // Ignore other messages (acks, etc.)
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            Err("No entropy received".into())
+                        })
+                        .await;
 
-            // TEMPORARY FIX: Disable remote key fetching because the Relay generates random entropy per request.
-            // This causes Client and Exit Peer to have DIFFERENT keys, breaking decryption.
-            // TODO: Implement "Shared Entropy" protocol where Client fetches and sends key to Exit Peer.
-            /*
-            if let Err(e) = keys.fetch_remote_key(vernam_url).await {
-                warn!(
-                    "Failed to fetch initial remote key: {}. Proceeding with ChaCha20 base layer.",
-                    e
-                );
+                    match entropy_timeout {
+                        Ok(Ok(entropy_bytes)) => {
+                            keys.set_remote_key(entropy_bytes);
+                            info!("✅ Received Swarm Entropy from Client (Double-Key active)");
+                        }
+                        Ok(Err(e)) => {
+                            warn!("Failed to receive entropy: {}. Using ChaCha20 only.", e);
+                        }
+                        Err(_) => {
+                            warn!("Entropy timeout. Client may not support Double-Key. Using ChaCha20 only.");
+                        }
+                    }
+                }
             }
-            */
-            info!("⚠️  Remote Key fetching disabled (Protocol Mismatch Fix) - Using ChaCha20 Base Layer only");
+
+            // Start Entropy Tax Payer background task (contribute randomness to Swarm)
+            let tax_payer = EntropyTaxPayer::new(vernam_url.to_string());
+            tax_payer.start_background_task();
+            info!("🎲 Started Entropy Tax Payer (contributing to Swarm)");
         }
 
         // Send ack

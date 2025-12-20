@@ -21,6 +21,7 @@ use tracing_subscriber::FmtSubscriber;
 
 mod chain;
 mod entry_node;
+mod exit_node_udp;
 mod exit_peer;
 mod http_proxy;
 mod key_exchange;
@@ -66,6 +67,9 @@ pub enum Mode {
     /// Entry Node mode - UDP relay for Multi-Hop VPN (first hop)
     #[value(name = "entry-node")]
     EntryNode,
+    /// Exit Node UDP mode - TUN forwarding for Multi-Hop VPN (second hop)
+    #[value(name = "exit-node-udp")]
+    ExitNodeUdp,
 }
 
 /// ZKS-Tunnel VPN Client
@@ -219,6 +223,9 @@ async fn main() -> Result<(), BoxError> {
             })
             .await;
         }
+        Mode::ExitNodeUdp => {
+            return exit_node_udp::run_exit_node_udp(args.listen_port).await;
+        }
         _ => {}
     }
 
@@ -234,7 +241,12 @@ async fn main() -> Result<(), BoxError> {
         Mode::Socks5 => run_socks5_mode(args, tunnel).await,
         Mode::Http => run_http_proxy_mode(args, tunnel).await,
         Mode::Vpn => run_vpn_mode(args, tunnel).await,
-        Mode::P2pClient | Mode::P2pVpn | Mode::ExitPeer | Mode::ExitPeerVpn | Mode::EntryNode => {
+        Mode::P2pClient
+        | Mode::P2pVpn
+        | Mode::ExitPeer
+        | Mode::ExitPeerVpn
+        | Mode::EntryNode
+        | Mode::ExitNodeUdp => {
             unreachable!()
         }
     }
@@ -304,6 +316,13 @@ fn print_banner(args: &Args) {
                 args.listen_port
             );
             info!("║  Exit:   {}  ", args.exit_node);
+        }
+        Mode::ExitNodeUdp => {
+            info!("║  Mode:   Exit Node UDP (TUN, Multi-Hop VPN)                 ║");
+            info!(
+                "║  Listen: 0.0.0.0:{}                                      ",
+                args.listen_port
+            );
         }
     }
 
