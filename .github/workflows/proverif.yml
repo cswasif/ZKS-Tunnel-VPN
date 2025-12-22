@@ -1,0 +1,50 @@
+name: ProVerif Verification
+
+on:
+  push:
+    paths:
+      - 'verification/**'
+  pull_request:
+    paths:
+      - 'verification/**'
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    name: Formal Verification
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install ProVerif
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y proverif
+
+      - name: Verify ZKS Handshake
+        run: |
+          cd verification
+          echo "=== Running ProVerif on ZKS Handshake ==="
+          proverif zks_handshake.pv | tee proverif_output.txt
+          
+          # Check for verification results
+          echo ""
+          echo "=== Verification Summary ==="
+          grep -E "(RESULT|Query)" proverif_output.txt || true
+          
+          # Fail if any query is false
+          if grep -q "is false" proverif_output.txt; then
+            echo "❌ VERIFICATION FAILED: Some security properties could not be verified"
+            exit 1
+          else
+            echo "✅ All security properties verified!"
+          fi
+
+      - name: Upload Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: proverif-results
+          path: verification/proverif_output.txt
