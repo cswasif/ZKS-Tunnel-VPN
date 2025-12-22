@@ -20,6 +20,7 @@ use tracing::{error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 
 mod chain;
+mod ct_ops;  // Constant-time cryptographic operations
 mod entry_node;
 mod exit_node_udp;
 mod exit_peer;

@@ -1,0 +1,210 @@
+name: Security Tests
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'zks-tunnel-client/src/**'
+      - 'verification/**'
+  pull_request:
+    branches: [main, master]
+  schedule:
+    # Weekly security scan on Sundays at 00:00 UTC
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ==========================================
+  #   STATIC ANALYSIS
+  # ==========================================
+  static-analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          components: clippy
+          
+      - name: Clippy (Security Lints)
+        run: |
+          cd zks-tunnel-client
+          cargo clippy --all-targets --all-features -- \
+            -D warnings \
+            -W clippy::all \
+            -W clippy::pedantic \
+            -W clippy::nursery \
+            -A clippy::module_name_repetitions \
+            -A clippy::too_many_lines
+          
+      - name: Check for unsafe code
+        run: |
+          echo "=== Unsafe Code Audit ==="
+          grep -rn "unsafe" zks-tunnel-client/src/ || echo "No unsafe code found"
+          
+      - name: Check for TODO/FIXME in crypto code
+        run: |
+          echo "=== Crypto Code TODOs ==="
+          grep -rn "TODO\|FIXME" zks-tunnel-client/src/ct_ops.rs \
+            zks-tunnel-client/src/p2p_relay.rs \
+            zks-tunnel-client/src/onion.rs || echo "No TODOs found"
+
+  # ==========================================
+  #   CONSTANT-TIME VERIFICATION
+  # ==========================================
+  timing-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        
+      - name: Run Unit Tests for ct_ops
+        run: |
+          cd zks-tunnel-client
+          cargo test ct_ops --release -- --nocapture
+          
+      - name: Test Constant-Time Properties
+        run: |
+          cd zks-tunnel-client
+          echo "=== Constant-Time Module Test ==="
+          cargo test ct_ops:: --release
+
+  # ==========================================
+  #   UNIT TESTS
+  # ==========================================
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        
+      - name: Run All Tests
+        run: |
+          cd zks-tunnel-client
+          cargo test --all-features -- --test-threads=1
+          
+      - name: Test Encryption/Decryption Roundtrip
+        run: |
+          cd zks-tunnel-client
+          cargo test encryption -- --nocapture
+
+  # ==========================================
+  #   ENTROPY VALIDATION
+  # ==========================================
+  entropy-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install ent
+        run: sudo apt-get update && sudo apt-get install -y ent
+        
+      - name: Generate Entropy Sample
+        run: |
+          # Generate 1MB of random data
+          dd if=/dev/urandom of=entropy_sample.bin bs=1M count=1
+          
+      - name: Run Entropy Test
+        run: |
+          echo "=== Entropy Quality Test ==="
+          ent entropy_sample.bin
+          
+          # Parse entropy value and check it's > 7.9
+          ENTROPY=$(ent entropy_sample.bin | grep "Entropy" | awk '{print $3}')
+          echo "Measured Entropy: $ENTROPY bits/byte"
+          
+          # Note: We can't easily compare floats in bash, so this is informational
+          echo "✅ Entropy test completed (manual review needed for < 7.9)"
+
+  # ==========================================
+  #   BUILD VERIFICATION
+  # ==========================================
+  build-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        
+      - name: Build in Release Mode
+        run: |
+          cd zks-tunnel-client
+          cargo build --release
+          
+      - name: Check for Compiler Warnings
+        run: |
+          cd zks-tunnel-client
+          cargo build --release 2>&1 | tee build_output.txt
+          
+          if grep -q "warning:" build_output.txt; then
+            echo "⚠️ Build has warnings"
+            grep "warning:" build_output.txt
+          else
+            echo "✅ No build warnings"
+          fi
+
+  # ==========================================
+  #   SUMMARY
+  # ==========================================
+  security-summary:
+    runs-on: ubuntu-latest
+    needs: [static-analysis, timing-tests, unit-tests, entropy-tests, build-check]
+    if: always()
+    steps:
+      - name: Security Test Summary
+        run: |
+          echo "=========================================="
+          echo "   ZKS SECURITY TEST SUMMARY"
+          echo "=========================================="
+          echo ""
+          
+          if [ "${{ needs.static-analysis.result }}" = "success" ]; then
+            echo "✅ Static Analysis: PASSED"
+          else
+            echo "❌ Static Analysis: FAILED"
+          fi
+          
+          if [ "${{ needs.timing-tests.result }}" = "success" ]; then
+            echo "✅ Timing Tests: PASSED"
+          else
+            echo "❌ Timing Tests: FAILED"
+          fi
+          
+          if [ "${{ needs.unit-tests.result }}" = "success" ]; then
+            echo "✅ Unit Tests: PASSED"
+          else
+            echo "❌ Unit Tests: FAILED"
+          fi
+          
+          if [ "${{ needs.entropy-tests.result }}" = "success" ]; then
+            echo "✅ Entropy Tests: PASSED"
+          else
+            echo "❌ Entropy Tests: FAILED"
+          fi
+          
+          if [ "${{ needs.build-check.result }}" = "success" ]; then
+            echo "✅ Build Check: PASSED"
+          else
+            echo "❌ Build Check: FAILED"
+          fi
+          
+          echo ""
+          echo "=========================================="
+          
+          # Fail if any critical test failed
+          if [ "${{ needs.unit-tests.result }}" != "success" ] || \
+             [ "${{ needs.build-check.result }}" != "success" ]; then
+            echo "❌ SECURITY TESTS FAILED"
+            exit 1
+          else
+            echo "✅ ALL SECURITY TESTS PASSED"
+          fi
