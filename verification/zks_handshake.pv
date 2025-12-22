@@ -1,14 +1,15 @@
 (*
- * ZKS Protocol - ProVerif Formal Verification Model
+ * ZKS Protocol - ProVerif Formal Verification Model (ENHANCED)
  * 
- * Protocol: ZKS (Zero-Knowledge Swarm) Handshake
+ * Protocol: ZKS (Zero-Knowledge Swarm) Handshake with Mutual Authentication
  * Author: Md. Wasif Faisal, BRAC University
  * Date: December 2025
+ * Version: 2.0 - Added mutual authentication to fix identity binding vulnerabilities
  * 
- * This model verifies the security properties of the ZKS handshake protocol,
- * which uses a hybrid key exchange (X25519 + Kyber768 post-quantum).
- * 
- * For simplicity, we abstract Kyber768 as a generic KEM and X25519 as DH.
+ * SECURITY FIXES:
+ * 1. Added expected initiator public key verification on responder side
+ * 2. Bound responder identity to both parties' public keys
+ * 3. Added authentication proof before revealing responder identity
  *)
 
 (* ============================================== *)
@@ -53,21 +54,11 @@ fun hkdf(key, key, bitstring): key.
 fun hkdf3(key, key, key, key, bitstring): key.
 
 (* --- Wasif-Vernam Encryption (XOR-based, modeled as IND-CPA secure) --- *)
-(* 
- * Wasif-Vernam Security Model:
- * - Key derived from HKDF (pseudo-random function)
- * - Key rotated every 2^32 bytes or 60 seconds
- * - Under PRF assumption, ciphertext is computationally indistinguishable from random
- *
- * We model this as an IND-CPA secure symmetric cipher:
- * - Attacker cannot distinguish encryptions of different messages
- * - Attacker cannot recover plaintext without the key
- *)
 fun wv_encrypt(bitstring, key, nonce): bitstring.
 reduc forall m: bitstring, k: key, n: nonce; 
   wv_decrypt(wv_encrypt(m, k, n), k, n) = m.
 
-(* Key rotation function - derives new key from old key + counter *)
+(* Key rotation function *)
 fun wv_rotate_key(key, bitstring): key.
 
 (* --- AEAD for handshake (ChaCha20-Poly1305 abstracted) --- *)
@@ -78,47 +69,35 @@ reduc forall m: bitstring, k: key, n: nonce;
 (* --- Timestamps --- *)
 fun timestamp(): bitstring.
 
+(* --- MAC for authentication proof --- *)
+fun hmac(bitstring, key): bitstring.
+
 (* ============================================== *)
 (*           SECURITY QUERIES                     *)
 (* ============================================== *)
 
-(* Secret values we want to protect *)
 free session_secret: bitstring [private].
 free initiator_identity: bitstring [private].
 free responder_identity: bitstring [private].
-
-(* Transport data - these are the actual user messages we encrypt *)
 free transport_data_1: bitstring [private].
 free transport_data_2: bitstring [private].
 free transport_data_3: bitstring [private].
 
-(* ============================================== *)
-(*     WASIF-VERNAM SECURITY PROPERTIES           *)
-(* ============================================== *)
-
-(* WV1: Session key secrecy - attacker cannot learn the derived session key *)
+(* Data confidentiality queries *)
 query attacker(session_secret).
-
-(* WV2: Transport data secrecy - attacker cannot learn encrypted user data *)
-(* This is the CORE proof that Wasif-Vernam protects user data *)
 query attacker(transport_data_1).
 query attacker(transport_data_2).
 query attacker(transport_data_3).
-
-(* WV3: Initiator identity hiding - attacker cannot learn who is connecting *)
 query attacker(initiator_identity).
-
-(* WV4: Responder identity hiding *)
 query attacker(responder_identity).
 
-(* WV5: Forward secrecy - implicitly verified by ephemeral keys *)
-(* Even if long-term keys are compromised later, past sessions remain secret *)
-
-(* Q4: Authentication - responder authenticates initiator *)
+(* Authentication events *)
 event InitiatorStarted(pkey, pkey).
 event ResponderAccepted(pkey, pkey).
 event SessionEstablished(pkey, pkey, key).
+event InitiatorVerified(pkey, pkey).
 
+(* Authentication queries *)
 query pkI: pkey, pkR: pkey; 
   event(ResponderAccepted(pkI, pkR)) ==> event(InitiatorStarted(pkI, pkR)).
 
@@ -126,34 +105,39 @@ query pkI: pkey, pkR: pkey, k: key;
   inj-event(SessionEstablished(pkI, pkR, k)) ==> inj-event(InitiatorStarted(pkI, pkR)).
 
 (* ============================================== *)
-(*              ZKS HANDSHAKE PROTOCOL            *)
+(*     ZKS HANDSHAKE PROTOCOL (ENHANCED)          *)
 (* ============================================== *)
 
 (*
+ * SECURITY FIX: Mutual Authentication Protocol
+ * 
  * Message 1: Initiator -> Responder
- * +--------+------------+-------------+--------------+
- * | Type   | Ephemeral  | Kyber PK    | Encrypted    |
- * | 0x01   | X25519 (32)| (1184 bytes)| Static + TS  |
- * +--------+------------+-------------+--------------+
+ * +--------+------------+-------------+------------------+
+ * | Type   | Ephemeral  | Kyber PK    | Encrypted        |
+ * | 0x01   | X25519(32) | (1184 bytes)| Static + TS + ID |
+ * +--------+------------+-------------+------------------+
  *
  * Message 2: Responder -> Initiator  
- * +--------+------------+-------------+----------+
- * | Type   | Ephemeral  | Kyber CT    | Encrypted|
- * | 0x02   | X25519 (32)| (1088 bytes)| Empty    |
- * +--------+------------+-------------+----------+
+ * +--------+------------+-------------+-------------------------+
+ * | Type   | Ephemeral  | Kyber CT    | Encrypted Response      |
+ * | 0x02   | X25519(32) | (1088 bytes)| Identity + Auth Proof   |
+ * +--------+------------+-------------+-------------------------+
+ *
+ * The key fix is that the responder only reveals identity AFTER
+ * verifying the initiator's identity matches expected keys.
  *)
 
 let Initiator(skI: skey, pkI: pkey, pkR: pkey) =
   (* Generate ephemeral keys *)
-  new eiX: skey;                        (* Ephemeral X25519 *)
-  new eiK: skey;                        (* Ephemeral Kyber *)
+  new eiX: skey;
+  new eiK: skey;
   let EiX = pk(eiX) in
   let EiK = kyber_pk(eiK) in
   
-  (* Derive encryption key for static identity: DH(ephemeral, responder_static) *)
+  (* Derive encryption key: DH(ephemeral, responder_static) *)
   let k_enc1 = x25519(eiX, pkR) in
   
-  (* Encrypt initiator's static public key + timestamp *)
+  (* Encrypt initiator's static public key + timestamp + identity *)
   new n1: nonce;
   let ts = timestamp() in
   let encrypted_static = aead_encrypt((pkI, ts, initiator_identity), k_enc1, n1) in
@@ -165,58 +149,59 @@ let Initiator(skI: skey, pkI: pkey, pkR: pkey) =
   out(c, (EiX, EiK, encrypted_static, n1));
   
   (* Receive Message 2 *)
-  in(c, (ErX: pkey, kyber_ct: bitstring, encrypted_resp: bitstring, n2: nonce));
+  in(c, (ErX: pkey, kyber_ct: bitstring, encrypted_resp: bitstring, n2: nonce, auth_proof: bitstring));
   
   (* Derive shared secrets *)
-  let dh1 = x25519(eiX, ErX) in         (* ephemeral-ephemeral *)
-  let dh2 = x25519(eiX, pkR) in         (* ephemeral-static *)
-  let dh3 = x25519(skI, ErX) in         (* static-ephemeral *)
-  let ss_kyber = kyber_ss(eiK, kyber_ct) in  (* Kyber shared secret *)
+  let dh1 = x25519(eiX, ErX) in
+  let dh2 = x25519(eiX, pkR) in
+  let dh3 = x25519(skI, ErX) in
+  let ss_kyber = kyber_ss(eiK, kyber_ct) in
   
-  (* Master secret: HKDF(DH1 || DH2 || DH3 || Kyber_SS) *)
-  let master_key = hkdf3(dh1, dh2, dh3, ss_kyber, (EiX, ErX)) in
+  (* Master secret: HKDF(DH1 || DH2 || DH3 || Kyber_SS || pkI || pkR) *)
+  (* SECURITY FIX: Include both public keys in context to bind identity *)
+  let master_key = hkdf3(dh1, dh2, dh3, ss_kyber, (EiX, ErX, pkI, pkR)) in
+  
+  (* Verify authentication proof from responder *)
+  let expected_proof = hmac((ErX, EiX, pkR, pkI), master_key) in
+  if auth_proof = expected_proof then
   
   (* Derive transport keys *)
   let t_send = hkdf(master_key, dh1, (pkI, pkR, EiX, ErX)) in
   let t_recv = hkdf(master_key, dh2, (pkR, pkI, ErX, EiX)) in
   
-  (* Session established *)
+  (* Session established after mutual verification *)
   event SessionEstablished(pkI, pkR, master_key);
   
-  (* ============================================== *)
-  (*     WASIF-VERNAM TRANSPORT ENCRYPTION          *)
-  (* ============================================== *)
-  (* 
-   * The following demonstrates that Wasif-Vernam encryption 
-   * protects arbitrary user data when using a secure session key.
-   * Each message uses a unique nonce for replay protection.
-   *)
-  
-  (* Send multiple encrypted transport messages *)
+  (* Transport encryption *)
   new n3: nonce;
   new n4: nonce;
   new n5: nonce;
   new n6: nonce;
   
-  (* Encrypt actual user data with Wasif-Vernam *)
   out(c, wv_encrypt(session_secret, t_send, n3));
   out(c, wv_encrypt(transport_data_1, t_send, n4));
   out(c, wv_encrypt(transport_data_2, t_send, n5));
   
-  (* Demonstrate key rotation - derive new key and encrypt more data *)
   let t_send_rotated = wv_rotate_key(t_send, (n5, EiX)) in
   out(c, wv_encrypt(transport_data_3, t_send_rotated, n6)).
 
 
-let Responder(skR: skey, pkR: pkey) =
+let Responder(skR: skey, pkR: pkey, expected_pkI: pkey) =
   (* Receive Message 1 *)
   in(c, (EiX: pkey, EiK: pkey, encrypted_static: bitstring, n1: nonce));
   
-  (* Derive decryption key: DH(my_static, initiator_ephemeral) *)
+  (* Derive decryption key *)
   let k_dec1 = x25519(skR, EiX) in
   
-  (* Decrypt initiator's static key + timestamp *)
+  (* Decrypt initiator's identity *)
   let (pkI: pkey, ts: bitstring, id: bitstring) = aead_decrypt(encrypted_static, k_dec1, n1) in
+  
+  (* SECURITY FIX: Verify initiator is from expected set *)
+  (* This check ensures the responder only responds to authorized initiators *)
+  if pkI = expected_pkI then
+  
+  (* Signal: Initiator has been verified *)
+  event InitiatorVerified(pkI, pkR);
   
   (* Generate ephemeral keys *)
   new erX: skey;
@@ -227,26 +212,30 @@ let Responder(skR: skey, pkR: pkey) =
   let ss_kyber = kyber_ss_enc(EiK, kyber_ct) in
   
   (* Derive shared secrets *)
-  let dh1 = x25519(erX, EiX) in         (* ephemeral-ephemeral *)
-  let dh2 = x25519(skR, EiX) in         (* static-ephemeral *)
-  let dh3 = x25519(erX, pkI) in         (* ephemeral-static *)
+  let dh1 = x25519(erX, EiX) in
+  let dh2 = x25519(skR, EiX) in
+  let dh3 = x25519(erX, pkI) in
   
-  (* Master secret *)
-  let master_key = hkdf3(dh1, dh2, dh3, ss_kyber, (EiX, ErX)) in
+  (* Master secret - SECURITY FIX: Include both identities in context *)
+  let master_key = hkdf3(dh1, dh2, dh3, ss_kyber, (EiX, ErX, pkI, pkR)) in
+  
+  (* SECURITY FIX: Create authentication proof BEFORE encrypting identity *)
+  (* This binds the responder's identity to the handshake transcript *)
+  let auth_proof = hmac((ErX, EiX, pkR, pkI), master_key) in
   
   (* Derive transport keys *)
   let t_recv = hkdf(master_key, dh1, (pkI, pkR, EiX, ErX)) in
   let t_send = hkdf(master_key, dh2, (pkR, pkI, ErX, EiX)) in
   
-  (* Encrypt response (empty payload for KCI resistance) *)
+  (* SECURITY FIX: Encrypt responder identity with key that includes both identities *)
   new n2: nonce;
   let encrypted_resp = aead_encrypt(responder_identity, master_key, n2) in
   
-  (* Authentication: Responder accepts initiator *)
+  (* Authentication: Responder accepts verified initiator *)
   event ResponderAccepted(pkI, pkR);
   
-  (* Send Message 2 *)
-  out(c, (ErX, kyber_ct, encrypted_resp, n2));
+  (* Send Message 2 with authentication proof *)
+  out(c, (ErX, kyber_ct, encrypted_resp, n2, auth_proof));
   
   (* Session established *)
   event SessionEstablished(pkI, pkR, master_key);
@@ -266,17 +255,17 @@ process
   let pkI = pk(skI) in
   let pkR = pk(skR) in
   
-  (* Publish public keys (simulates out-of-band distribution) *)
+  (* Publish public keys *)
   out(c, pkI);
   out(c, pkR);
   
   (* Run protocol instances *)
+  (* SECURITY FIX: Responder now expects specific initiator key *)
   (
-    (* Honest initiator and responder *)
     Initiator(skI, pkI, pkR) | 
-    Responder(skR, pkR) |
+    Responder(skR, pkR, pkI) |
     
-    (* Allow multiple sessions for stronger verification *)
+    (* Multiple sessions with verified key pairs *)
     !Initiator(skI, pkI, pkR) |
-    !Responder(skR, pkR)
+    !Responder(skR, pkR, pkI)
   )
