@@ -17,6 +17,15 @@ use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret, StaticSecret};
 
+#[cfg(feature = "quantum")]
+use ml_kem::kem::{Decapsulate, Encapsulate};
+#[cfg(feature = "quantum")]
+use ml_kem::kem::{DecapsulationKey, EncapsulationKey};
+#[cfg(feature = "quantum")]
+use ml_kem::{Ciphertext, EncodedSizeUser, KemCore, MlKem768, MlKem768Params, SharedKey};
+#[cfg(feature = "quantum")]
+use rand_core::OsRng;
+
 type HmacSha256 = Hmac<Sha256>;
 
 /// Key exchange state machine (extended for 3-message handshake)
@@ -70,6 +79,18 @@ pub struct KeyExchange {
     room_id: String,
     /// Timestamp for freshness
     timestamp: u64,
+    /// Kyber secret key (Post-Quantum)
+    #[cfg(feature = "quantum")]
+    kyber_secret: Option<DecapsulationKey<MlKem768Params>>,
+    /// Kyber public key
+    #[cfg(feature = "quantum")]
+    pub kyber_public: Option<EncapsulationKey<MlKem768Params>>,
+    /// Peer's Kyber public key
+    #[cfg(feature = "quantum")]
+    peer_kyber_public: Option<EncapsulationKey<MlKem768Params>>,
+    /// Kyber shared secret
+    #[cfg(feature = "quantum")]
+    kyber_shared_secret: Option<SharedKey<MlKem768>>,
 }
 
 #[allow(dead_code)]
@@ -102,6 +123,14 @@ impl KeyExchange {
             state: KeyExchangeState::Init,
             room_id: room_id.to_string(),
             timestamp,
+            #[cfg(feature = "quantum")]
+            kyber_secret: None,
+            #[cfg(feature = "quantum")]
+            kyber_public: None,
+            #[cfg(feature = "quantum")]
+            peer_kyber_public: None,
+            #[cfg(feature = "quantum")]
+            kyber_shared_secret: None,
         }
     }
 
@@ -121,6 +150,13 @@ impl KeyExchange {
 
         self.ephemeral_secret = Some(secret);
         self.ephemeral_public = Some(public_key);
+
+        #[cfg(feature = "quantum")]
+        {
+            let (dk, ek) = MlKem768::generate(&mut OsRng);
+            self.kyber_public = Some(ek);
+            self.kyber_secret = Some(dk);
+        }
     }
 
     /// Get our ephemeral public key as bytes
@@ -147,10 +183,19 @@ impl KeyExchange {
 
         self.state = KeyExchangeState::InitiatorWaitingForResponse;
 
+        #[cfg(feature = "quantum")]
+        #[cfg(feature = "quantum")]
+        let kyber_pk_hex = self
+            .kyber_public
+            .as_ref()
+            .map(|pk: &EncapsulationKey<MlKem768Params>| hex::encode(pk.as_bytes()));
+
         Ok(KeyExchangeMessage::AuthInit {
             ephemeral_pk: hex::encode(eph_pk),
             encrypted_identity: hex::encode(identity_proof),
             timestamp: self.timestamp,
+            #[cfg(feature = "quantum")]
+            kyber_pk: kyber_pk_hex,
         })
     }
 
@@ -171,14 +216,26 @@ impl KeyExchange {
     ) -> Result<KeyExchangeMessage, &'static str> {
         self.role = Some(KeyExchangeRole::Responder);
 
-        let (peer_eph_pk_hex, identity_proof_hex, peer_timestamp) = match auth_init {
-            KeyExchangeMessage::AuthInit {
-                ephemeral_pk,
-                encrypted_identity,
-                timestamp,
-            } => (ephemeral_pk, encrypted_identity, *timestamp),
-            _ => return Err("Expected AuthInit message"),
-        };
+        let (peer_eph_pk_hex, identity_proof_hex, peer_timestamp, peer_kyber_pk_hex) =
+            match auth_init {
+                KeyExchangeMessage::AuthInit {
+                    ephemeral_pk,
+                    encrypted_identity,
+                    timestamp,
+                    #[cfg(feature = "quantum")]
+                    kyber_pk,
+                } => (ephemeral_pk, encrypted_identity, *timestamp, {
+                    #[cfg(feature = "quantum")]
+                    {
+                        kyber_pk.as_deref()
+                    }
+                    #[cfg(not(feature = "quantum"))]
+                    {
+                        None
+                    }
+                }),
+                _ => return Err("Expected AuthInit message"),
+            };
 
         // Parse peer's ephemeral public key
         let peer_eph_pk_bytes =
@@ -204,6 +261,22 @@ impl KeyExchange {
         // Store peer's ephemeral public key
         self.peer_ephemeral_public = Some(peer_eph_pk);
 
+        // Handle Kyber encapsulation
+        #[cfg(feature = "quantum")]
+        let kyber_ct_hex = if let Some(pk_hex) = peer_kyber_pk_hex {
+            let pk_bytes = hex::decode(pk_hex).map_err(|_| "Invalid hex in kyber_pk")?;
+            let pk_array = ml_kem::array::Array::try_from(pk_bytes.as_slice())
+                .map_err(|_| "Invalid Kyber public key length")?;
+            let pk = EncapsulationKey::<MlKem768Params>::from_bytes(&pk_array);
+            let (ct, ss) = pk.encapsulate(&mut OsRng).unwrap();
+            self.kyber_shared_secret = Some(ss);
+            self.peer_kyber_public = Some(pk);
+            let ct_bytes = ct.as_slice();
+            Some(hex::encode(ct_bytes))
+        } else {
+            None
+        };
+
         // Compute session key
         self.compute_session_key()?;
 
@@ -218,6 +291,8 @@ impl KeyExchange {
         Ok(KeyExchangeMessage::AuthResponse {
             ephemeral_pk: hex::encode(our_eph_pk),
             auth_mac: hex::encode(auth_mac),
+            #[cfg(feature = "quantum")]
+            kyber_ct: kyber_ct_hex,
         })
     }
 
@@ -252,9 +327,17 @@ impl KeyExchange {
         // Authentication is handled by HMAC proofs, not session key derivation
         let dh1 = eph_secret.diffie_hellman(&peer_eph_pk);
 
+        // Mix Kyber shared secret
+        let mut ikm = dh1.as_bytes().to_vec();
+        #[cfg(feature = "quantum")]
+        if let Some(ss) = &self.kyber_shared_secret {
+            let ss_bytes: &[u8] = ss.as_ref();
+            ikm.extend_from_slice(ss_bytes);
+        }
+
         // Derive session key with HKDF
         // Room ID provides domain separation
-        let hk = Hkdf::<Sha256>::new(Some(self.room_id.as_bytes()), dh1.as_bytes());
+        let hk = Hkdf::<Sha256>::new(Some(self.room_id.as_bytes()), &ikm);
         let mut session_key = [0u8; 32];
         hk.expand(b"zks-session-key-v1", &mut session_key)
             .expect("HKDF expand failed");
@@ -288,11 +371,22 @@ impl KeyExchange {
         &mut self,
         auth_response: &KeyExchangeMessage,
     ) -> Result<KeyExchangeMessage, &'static str> {
-        let (peer_eph_pk_hex, auth_mac_hex) = match auth_response {
+        let (peer_eph_pk_hex, auth_mac_hex, kyber_ct_hex) = match auth_response {
             KeyExchangeMessage::AuthResponse {
                 ephemeral_pk,
                 auth_mac,
-            } => (ephemeral_pk, auth_mac),
+                #[cfg(feature = "quantum")]
+                kyber_ct,
+            } => (ephemeral_pk, auth_mac, {
+                #[cfg(feature = "quantum")]
+                {
+                    kyber_ct.as_deref()
+                }
+                #[cfg(not(feature = "quantum"))]
+                {
+                    None
+                }
+            }),
             _ => return Err("Expected AuthResponse message"),
         };
 
@@ -308,6 +402,18 @@ impl KeyExchange {
 
         // Store peer's ephemeral public key
         self.peer_ephemeral_public = Some(peer_eph_pk);
+
+        // Handle Kyber decapsulation
+        #[cfg(feature = "quantum")]
+        if let Some(ct_hex) = kyber_ct_hex {
+            let _ct_bytes = hex::decode(ct_hex).map_err(|_| "Invalid hex in kyber_ct")?;
+            let ct_bytes = hex::decode(ct_hex).map_err(|_| "Invalid hex in kyber_ct")?;
+            let ct = Ciphertext::<MlKem768>::try_from(ct_bytes.as_slice())
+                .map_err(|_| "Invalid Kyber ciphertext")?;
+            let sk = self.kyber_secret.as_ref().ok_or("No Kyber secret key")?;
+            let ss = sk.decapsulate(&ct).unwrap();
+            self.kyber_shared_secret = Some(ss);
+        }
 
         // Compute session key
         self.compute_session_key()?;
@@ -525,6 +631,10 @@ pub enum KeyExchangeMessage {
         ephemeral_pk: String,
         encrypted_identity: String,
         timestamp: u64,
+        /// Kyber public key (Hex encoded)
+        #[cfg(feature = "quantum")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kyber_pk: Option<String>,
     },
 
     /// Message 2: Responder's ephemeral PK + authentication MAC
@@ -532,6 +642,10 @@ pub enum KeyExchangeMessage {
     AuthResponse {
         ephemeral_pk: String,
         auth_mac: String,
+        /// Kyber ciphertext (Hex encoded)
+        #[cfg(feature = "quantum")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kyber_ct: Option<String>,
     },
 
     /// Message 3: Initiator's key confirmation

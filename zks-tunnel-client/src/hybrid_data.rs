@@ -4,13 +4,18 @@
 //! This separates data transfer (high bandwidth via Tunnel) from
 //! signaling (key exchange via WebSocket Worker).
 use std::sync::Arc;
+#[cfg(feature = "vpn")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+#[cfg(feature = "vpn")]
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::warn;
+#[cfg(feature = "vpn")]
+use tracing::{debug, error, info};
 
 /// Shared encryption keys from signaling phase
 #[derive(Default)]
+#[allow(dead_code)]
 pub struct HybridDataState {
     /// Shared secret from X25519 key exchange
     pub _shared_secret: Option<[u8; 32]>,
@@ -58,6 +63,7 @@ pub async fn run_hybrid_data_listener(
 }
 
 #[cfg(not(feature = "vpn"))]
+#[allow(dead_code)]
 pub async fn run_hybrid_data_listener(
     _listen_port: u16,
     _state: Arc<RwLock<HybridDataState>>,

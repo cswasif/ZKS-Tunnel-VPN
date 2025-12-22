@@ -254,6 +254,8 @@ pub struct P2PRelay {
     pub role: PeerRole,
     /// Room ID
     pub room_id: String,
+    /// Shared secret for file transfer
+    pub shared_secret: [u8; 32],
 }
 
 #[allow(dead_code)]
@@ -542,6 +544,7 @@ impl P2PRelay {
             keys: Arc::new(Mutex::new(keys)),
             role,
             room_id: room_id.to_string(),
+            shared_secret,
         })
     }
 
@@ -649,40 +652,38 @@ impl P2PRelay {
         Ok(None)
     }
 
-    /// Receive raw encrypted bytes
+    /// Receive raw decrypted bytes (for file transfer)
     pub async fn recv_raw(
         &self,
     ) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>> {
         let mut reader = self.reader.lock().await;
-
         while let Some(msg) = reader.next().await {
-            match msg? {
+            let msg = msg?;
+            match msg {
                 Message::Binary(data) => {
-                    let decrypted = {
-                        let keys = self.keys.lock().await;
-                        match keys.decrypt(&data) {
-                            Ok(d) => d,
-                            Err(_) => {
-                                warn!(
-                                    "Decryption failed (Poly1305 tag mismatch) - dropping packet"
-                                );
-                                continue;
-                            }
-                        }
-                    };
-                    return Ok(Some(decrypted));
+                    let keys = self.keys.lock().await;
+                    match keys.decrypt(&data) {
+                        Ok(d) => return Ok(Some(d)),
+                        Err(_) => continue,
+                    }
                 }
-                Message::Text(text) => {
-                    debug!("Relay control message: {}", text);
-                }
-                Message::Close(_) => {
-                    return Ok(None);
-                }
+                Message::Close(_) => return Ok(None),
                 _ => {}
             }
         }
-
         Ok(None)
+    }
+
+    /// Receive a raw message with timeout (decrypts if binary)
+    pub async fn recv_raw_timeout(&self, millis: u64) -> Option<Vec<u8>> {
+        let mut reader = self.reader.lock().await;
+        match tokio::time::timeout(Duration::from_millis(millis), reader.next()).await {
+            Ok(Some(Ok(Message::Binary(data)))) => {
+                let keys = self.keys.lock().await;
+                keys.decrypt(&data).ok()
+            }
+            _ => None,
+        }
     }
 
     /// Close the relay connection

@@ -24,6 +24,7 @@ mod ct_ops; // Constant-time cryptographic operations
 mod entry_node;
 mod exit_node_udp;
 mod exit_peer;
+mod file_transfer;
 mod http_proxy;
 mod hybrid_data;
 mod key_exchange;
@@ -98,6 +99,12 @@ pub enum Mode {
     #[cfg(feature = "swarm")]
     #[value(name = "swarm")]
     Swarm,
+    /// Send file to peer
+    #[value(name = "send-file")]
+    SendFile,
+    /// Receive file from peer
+    #[value(name = "receive-file")]
+    ReceiveFile,
 }
 
 /// ZKS-Tunnel VPN Client
@@ -177,6 +184,18 @@ struct Args {
     /// Listen port for Entry Node mode (UDP)
     #[arg(long, default_value_t = 51820)]
     listen_port: u16,
+
+    /// File path for transfer (send-file/receive-file mode)
+    #[arg(long)]
+    file: Option<String>,
+
+    /// Destination peer ID (send-file mode)
+    #[arg(long)]
+    dest: Option<String>,
+
+    /// Transfer ticket (receive-file mode)
+    #[arg(long)]
+    ticket: Option<String>,
 }
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -255,7 +274,7 @@ async fn main() -> Result<(), BoxError> {
             return exit_node_udp::run_exit_node_udp(args.listen_port).await;
         }
         Mode::ExitPeerHybrid => {
-            let room_id = args.room.clone().unwrap_or_else(|| "default".to_string());
+            let _room_id = args.room.clone().unwrap_or_else(|| "default".to_string());
             #[cfg(feature = "vpn")]
             {
                 return run_exit_peer_hybrid_mode(args, room_id).await;
@@ -271,6 +290,34 @@ async fn main() -> Result<(), BoxError> {
         Mode::Swarm => {
             let room_id = args.room.clone().unwrap_or_else(|| "default".to_string());
             return run_swarm_mode(args, room_id).await;
+        }
+        Mode::SendFile => {
+            let room_id = args.room.clone().unwrap_or_else(|| {
+                error!("Room ID required for file transfer. Use --room <id>");
+                std::process::exit(1);
+            });
+            let file_path = args.file.clone().unwrap_or_else(|| {
+                error!("File path required. Use --file <path>");
+                std::process::exit(1);
+            });
+            return file_transfer::run_send_file(
+                &args.relay,
+                &args.vernam,
+                &room_id,
+                &file_path,
+                args.dest,
+            )
+            .await;
+        }
+        Mode::ReceiveFile => {
+            let room_id = args.room.clone().unwrap_or_else(|| "default".to_string());
+            return file_transfer::run_receive_file(
+                &args.relay,
+                &args.vernam,
+                &room_id,
+                args.ticket,
+            )
+            .await;
         }
         _ => {}
     }
@@ -293,7 +340,9 @@ async fn main() -> Result<(), BoxError> {
         | Mode::ExitPeerVpn
         | Mode::EntryNode
         | Mode::ExitNodeUdp
-        | Mode::ExitPeerHybrid => {
+        | Mode::ExitPeerHybrid
+        | Mode::SendFile
+        | Mode::ReceiveFile => {
             unreachable!()
         }
         #[cfg(feature = "swarm")]
@@ -379,6 +428,15 @@ fn print_banner(args: &Args) {
             info!("║  Mode:   Exit Peer Hybrid (Worker + Tunnel)                ║");
             info!("║  Room:   {}  ", args.room.as_deref().unwrap_or("none"));
             info!("║  Data:   TCP port 51821 (via Cloudflare Tunnel)            ║");
+        }
+        Mode::SendFile => {
+            info!("║  Mode:   Send File (P2P Encrypted)                          ║");
+            info!("║  Room:   {}  ", args.room.as_deref().unwrap_or("none"));
+            info!("║  File:   {}  ", args.file.as_deref().unwrap_or("none"));
+        }
+        Mode::ReceiveFile => {
+            info!("║  Mode:   Receive File (P2P Encrypted)                       ║");
+            info!("║  Room:   {}  ", args.room.as_deref().unwrap_or("none"));
         }
         #[cfg(feature = "swarm")]
         Mode::Swarm => {

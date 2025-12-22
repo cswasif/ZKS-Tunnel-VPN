@@ -11,10 +11,11 @@ name = "zks-vpn"
 path = "src/main.rs"
 
 [features]
-default = ["socks5"]
+default = ["socks5", "quantum"]
 socks5 = []
 vpn = ["tun-rs", "netstack-smoltcp", "smoltcp"]
-swarm = ["dep:libp2p", "dep:pqcrypto-kyber", "dep:pqcrypto-traits", "vpn"]
+quantum = ["dep:ml-kem"]
+swarm = ["dep:libp2p", "quantum", "vpn"]
 
 [dependencies]
 zks-tunnel-proto = { path = "../zks-tunnel-proto" }
@@ -26,7 +27,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 getrandom = { workspace = true }
-base64 = { workspace = true }
+base64.workspace = true
 clap = { version = "4.4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -58,8 +59,9 @@ tokio-native-tls = "0.3"
 libp2p = { version = "0.54", features = ["dcutr", "relay", "identify", "noise", "tcp", "quic", "yamux", "dns", "tokio", "macros", "ping"], optional = true }
 
 # Post-quantum cryptography (optional, for swarm feature)
-pqcrypto-kyber = { version = "0.8", optional = true }
-pqcrypto-traits = { version = "0.3", optional = true }
+ml-kem = { version = "0.2", optional = true }
+indicatif = "0.18.3"
+blake3 = "1.8.2"
 
 [target.'cfg(windows)'.dependencies]
 # Windows-specific: Wintun driver bindings

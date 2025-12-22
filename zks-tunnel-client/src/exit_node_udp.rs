@@ -12,10 +12,15 @@
 //! Usage:
 //!   sudo zks-vpn --mode exit-node-udp --listen-port 51820
 
+#[cfg(feature = "vpn")]
 use std::net::SocketAddr;
+#[cfg(feature = "vpn")]
 use std::sync::Arc;
+#[cfg(feature = "vpn")]
 use tokio::net::UdpSocket;
+#[cfg(feature = "vpn")]
 use tokio::sync::RwLock;
+#[cfg(feature = "vpn")]
 use tracing::{debug, error, info};
 
 /// Run as Exit Node in UDP mode (Multi-Hop - Second Hop)

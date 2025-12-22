@@ -1,202 +1,103 @@
-# ZKS-Tunnel VPN
+# ZKS Protocol & VPN Client
 
-**The World's First Serverless, Free, Zero-Knowledge System-Wide VPN**
+ZKS (Zero-Knowledge Swarm) is a next-generation decentralized network protocol designed for high-security, censorship-resistant communication. This repository contains the reference implementation of the ZKS VPN client, utilizing the **Faisal Swarm** topology and **Wasif Vernam** encryption.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![CI](https://github.com/cswasif/ZKS-Tunnel-VPN/actions/workflows/ci.yml/badge.svg)](https://github.com/cswasif/ZKS-Tunnel-VPN/actions/workflows/ci.yml)
+## Core Protocol Architecture
 
-## 🚀 What is ZKS-Tunnel?
+The ZKS protocol implements a unique multi-hop architecture designed to operate in highly restrictive network environments where traditional VPNs (WireGuard, OpenVPN) are blocked.
 
-ZKS-Tunnel is a revolutionary **system-wide VPN** that runs entirely on **Cloudflare Workers** (free tier) with **Zero-Knowledge Swarm** encryption. No servers to rent, no monthly fees, no trust required.
+### 1. Faisal Swarm Topology
+The network operates on a swarm-based topology that separates signaling from data transport:
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  YOUR PC          CLOUDFLARE EDGE           INTERNET            │
-│                   (300+ cities)                                 │
-│  ┌─────────┐     ┌─────────────┐     ┌─────────────────────┐    │
-│  │ zks-vpn │────►│ ZKS Worker  │────►│ Any Website/Server  │    │
-│  │ TUN VPN │     │ (Free!)     │     │ Sees Cloudflare IP  │    │
-│  └─────────┘     └─────────────┘     └─────────────────────┘    │
-│                                                                 │
-│  ALL system traffic routed. Your data is ENCRYPTED (OTP-level). │
-└─────────────────────────────────────────────────────────────────┘
-```
+*   **Signaling Layer**: Uses WebSocket over TLS (WSS) to masquerade as standard HTTPS traffic, rendering it resistant to Deep Packet Inspection (DPI).
+*   **Data Layer (DCUtR)**: Implements **Direct Connection Upgrade through Relay**. The protocol initially connects via a relay but attempts to upgrade to a direct P2P connection (UDP/QUIC) using NAT hole-punching techniques (libp2p).
+*   **Multi-Hop Routing**: Traffic is routed through a dynamic chain of nodes:
+    *   **Entry Node**: The client device or a dedicated entry VPS.
+    *   **Relay**: A serverless edge component (Cloudflare Workers) for signaling and initial data relay.
+    *   **Exit Node**: The final hop that forwards traffic to the internet.
 
-## ✨ Features
+### 2. Wasif Vernam Encryption
+ZKS employs a "Double-Key Defense" system known as **Wasif Vernam**, combining post-quantum cryptography with information-theoretic principles:
 
-### VPN Capabilities
-- **🌐 System-Wide VPN** - Routes ALL your system traffic (not just browser)
-- **🔒 TUN Device** - Creates virtual network interface for full OS integration
-- **⚡ TCP/IP Stack** - Userspace networking with `netstack-smoltcp`
-- **🛡️ Kill Switch** - Blocks traffic if VPN disconnects (Windows/Linux/macOS)
-- **🔐 DNS Leak Protection** - DNS-over-HTTPS via Cloudflare 1.1.1.1
-- **📡 SOCKS5 Proxy Mode** - Optional lightweight mode for app-level routing
+*   **Base Layer**: **ChaCha20Poly1305** (IETF variant) for high-speed authenticated encryption.
+*   **Enhancement Layer**: A secondary **Remote Entropy Stream** is XORed with the plaintext before encryption. This ensures that even if the ChaCha20 key is compromised, the message remains secure without the entropy stream.
+*   **Key Exchange**: Authenticated 3-message handshake using a hybrid scheme:
+    *   **Post-Quantum**: **ML-KEM-768** (Kyber) for protection against "Harvest Now, Decrypt Later" attacks.
+    *   **Classical**: **X25519** for established security guarantees.
+    *   **Identity**: Ephemeral identity keys are derived from the `room_id`, ensuring mutual authentication without central PKI.
 
-### Cost & Privacy
-- **💰 $0/month** - Runs on Cloudflare Workers free tier (100,000 requests/day)
-- **🔐 Mathematically Unbreakable** - ZKS double-key Vernam cipher (OTP security)
-- **🌍 Global** - 300+ edge locations for low latency
-- **🕵️ Zero-Knowledge** - Even Cloudflare can't read your traffic (split-key encryption)
-- **📖 Open Source** - Fully auditable Rust code
+## System Components
 
-## 📦 Project Structure
+### `zks-tunnel-client`
+The primary user application written in Rust.
+*   **System-Wide VPN**: Creates a **TUN device** (`zks0`) and uses a userspace TCP/IP stack (`netstack-smoltcp`) to route all OS traffic.
+*   **Kill Switch**: Integrated OS-level kill switch (Windows `netsh` / Linux `iptables`) prevents data leaks if the tunnel drops.
+*   **SOCKS5 Proxy**: Lightweight mode for application-specific tunneling.
+*   **File Transfer**: Secure, resumable P2P file transfer with **Transfer Tickets**.
 
-```
-ZKS_VPN/
-├── zks-tunnel-proto/    # Shared protocol definitions (Rust + WASM)
-├── zks-tunnel-worker/   # Cloudflare Worker (Serverless Gateway)
-└── zks-tunnel-client/   # Local client (VPN + SOCKS5)
-    ├── src/vpn.rs       # System-wide VPN (TUN + netstack)
-    ├── src/socks5.rs    # SOCKS5 proxy mode
-    └── src/tunnel.rs    # WebSocket tunnel to worker
-```
+### `zks-tunnel-worker`
+A serverless relay running on Cloudflare Workers. It handles the initial signaling and WebSocket relaying, ensuring high availability and zero infrastructure maintenance.
 
-## 🛠️ Quick Start
+### `zks-tunnel-proto`
+Defines the binary wire format, including:
+*   `Connect` / `Data` / `Close` frames for stream management.
+*   `IpPacket` (0x20) for raw layer-3 VPN traffic.
+*   `UdpDatagram` (0x07) for stateless UDP.
 
-### Prerequisites
-- **Rust** (latest stable): `https://rustup.rs/`
-- **Wrangler** (for deploying worker): `npm install -g wrangler`
-- **Admin/Root** (for VPN mode, not needed for SOCKS5)
+## Features
 
-### 1. Deploy the Worker
+*   **Zero-Knowledge Architecture**: The relay (Cloudflare) cannot decrypt traffic; it only sees encrypted WebSocket frames.
+*   **Resumable File Transfer**: Built-in P2P file sharing using `zks://` tickets.
+*   **DNS Leak Protection**: Intercepts UDP port 53 traffic and resolves via DoH (DNS over HTTPS) through the tunnel.
+*   **Cross-Platform**: Windows, Linux, macOS.
 
-```bash
-cd zks-tunnel-worker
-wrangler login
-wrangler deploy
-# Note your worker URL: https://your-worker.YOUR-SUBDOMAIN.workers.dev
-```
+## Usage
 
-### 2. Run as System-Wide VPN (Recommended)
-
-```bash
-cd zks-tunnel-client
-cargo build --release --features vpn
-
-# Linux/macOS (requires sudo for TUN device)
-sudo ./target/release/zks-vpn \
-  --worker wss://your-worker.YOUR-SUBDOMAIN.workers.dev/tunnel \
-  --mode vpn \
-  --vpn-address 10.0.85.1 \
-  --kill-switch \
-  --dns-protection
-
-# Windows (run as Administrator)
-.\target\release\zks-vpn.exe ^
-  --worker wss://your-worker.YOUR-SUBDOMAIN.workers.dev/tunnel ^
-  --mode vpn ^
-  --vpn-address 10.0.85.1 ^
-  --kill-switch ^
-  --dns-protection
-```
-
-**That's it!** All system traffic (browser, apps, terminal) now goes through the VPN.
-
-### 3. Run as SOCKS5 Proxy (Alternative)
-
+### Installation
 ```bash
 cargo build --release
-
-./target/release/zks-vpn \
-  --worker wss://your-worker.YOUR-SUBDOMAIN.workers.dev/tunnel \
-  --mode socks5 \
-  --listen 127.0.0.1:1080
 ```
 
-Then configure your apps to use SOCKS5 proxy: `127.0.0.1:1080`
+### Modes
 
-## 📖 How It Works
-
-### System-Wide VPN Mode (--mode vpn)
-1. **TUN Device** - Creates virtual network interface (`zks0`)
-2. **IP Routing** - OS routes all traffic through the TUN device
-3. **Userspace Stack** - `netstack-smoltcp` processes TCP/IP packets
-4. **Tunnel** - Packets encrypted with ZKS, sent via WebSocket to Worker
-5. **Worker** - Opens TCP sockets to destinations, relays data bidirectionally
-6. **Kill Switch** - Firewall rules block non-VPN traffic if enabled
-
-### SOCKS5 Proxy Mode (--mode socks5)
-1. **Local Proxy** - Listens on port 1080
-2. **App Connection** - Browser/app connects to proxy
-3. **Tunnel** - Encrypted via ZKS WebSocket to Worker
-4. **Worker** - Opens TCP socket to destination
-5. **Response** - Data flows back the same way
-
-## 🔐 Security Architecture
-
-### Split-Streamed Vernam Cipher (ZKS Protocol)
-ZKS-Tunnel uses a revolutionary encryption method documented in [`innovation_paper.md`](innovation_paper.md):
-
-```
-Ciphertext = Plaintext ⊕ Key_A ⊕ Key_B
-```
-
-- **Key_A**: Generated locally (CSPRNG)
-- **Key_B**: Streamed from decentralized swarm (LavaRand hardware entropy)
-- **Disjoint Paths**: Keys and ciphertext travel through different network routes
-
-**Result**: Information-theoretic security (unbreakable, even by quantum computers)
-
-### Additional Security Features
-- **DNS-over-HTTPS**: Prevents DNS leaks (queries via Cloudflare 1.1.1.1)
-- **Kill Switch**: Firewall rules block traffic if tunnel drops
-- **SSRF Protection**: Worker blocks connections to private IPs
-- **No Logging**: Cloudflare Workers are stateless, no persistent storage
-
-## 🧪 Development
-
-### Build All Packages
+**1. System-Wide VPN (Recommended)**
+Routes all traffic through the secure tunnel. Requires Administrator/Root privileges.
 ```bash
-cargo check --workspace --all-features
+# Linux/macOS
+sudo ./target/release/zks-vpn --mode vpn --worker wss://your-relay.workers.dev/tunnel
+
+# Windows (Admin PowerShell)
+./target/release/zks-vpn.exe --mode vpn --worker wss://your-relay.workers.dev/tunnel
 ```
 
-### Run Tests
+**2. SOCKS5 Proxy**
+Starts a local proxy on port 1080.
+```bash
+./target/release/zks-vpn --mode socks5 --worker wss://your-relay.workers.dev/tunnel
+```
+
+**3. Secure File Transfer**
+*Sender:*
+```bash
+./target/release/zks-vpn --mode send-file --file ./secret.pdf
+# Generates a ticket: zks://...
+```
+*Receiver:*
+```bash
+./target/release/zks-vpn --mode receive-file --ticket zks://...
+```
+
+## Development
+
+The project is a Rust workspace:
+*   `zks-tunnel-client`: Client implementation.
+*   `zks-tunnel-proto`: Protocol library.
+*   `zks-tunnel-worker`: Relay implementation.
+
+Run tests:
 ```bash
 cargo test --workspace
 ```
 
-### Local Development
-```bash
-# Terminal 1: Run worker locally (requires wrangler)
-cd zks-tunnel-worker
-wrangler dev --port 8787
-
-# Terminal 2: Run client (SOCKS5 mode for easy testing)
-cd zks-tunnel-client
-cargo run -- --worker ws://localhost:8787/tunnel --mode socks5
-```
-
-## 🤝 Contributing
-
-Contributions are welcome! Please:
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## 📄 License
-
-MIT License - Free to use, modify, and distribute.
-
-## 🙏 Credits
-
-Created by **Md. Wasif Faisal** as part of the ZKS (Zero-Knowledge Swarm) project.
-
-### Key Technologies
-- **Rust** - Memory-safe systems programming
-- **Cloudflare Workers** - Serverless edge computing
-- **tun-rs** - Cross-platform TUN device creation
-- **netstack-smoltcp** - Userspace TCP/IP stack
-- **tokio** - Async runtime for Rust
-- **WebAssembly** - Runs Rust in the browser/worker
-
-## 📚 Documentation
-
-- [Innovation Paper](innovation_paper.md) - ZKS Protocol & Split-Streamed Vernam Cipher
-- [Whitepaper](whitepaper.md) - Full technical specification
-- [System VPN Research](system_wide_vpn_research.md) - Architecture decisions
-
----
-
-**Build the future. Make it free. Keep it private.** 🌍🔐
+## License
+GNU Affero General Public License v3.0 (AGPL-3.0)

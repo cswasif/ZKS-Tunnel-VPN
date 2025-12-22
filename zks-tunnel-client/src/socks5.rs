@@ -163,7 +163,7 @@ async fn send_reply(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr_parts: Vec<u8> = bind_addr
         .split('.')
-        .filter_map(|s| s.parse().ok())
+        .filter_map(|s| s.parse::<u8>().ok())
         .collect();
 
     let reply = [
