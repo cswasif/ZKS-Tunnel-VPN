@@ -140,12 +140,7 @@ impl MultiQueueTun {
     /// Create a single queue (file descriptor) for the TUN device
     fn create_queue(name: &str) -> io::Result<RawFd> {
         // Open /dev/net/tun
-        let fd = unsafe {
-            libc::open(
-                c"/dev/net/tun".as_ptr(),
-                libc::O_RDWR,
-            )
-        };
+        let fd = unsafe { libc::open(c"/dev/net/tun".as_ptr(), libc::O_RDWR) };
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }

@@ -15,7 +15,7 @@ use chacha20poly1305::{
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
-use serde_json;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -45,17 +45,19 @@ impl TransferTicket {
         }
     }
 
-    pub fn to_string(&self) -> String {
-        let json = serde_json::to_string(self).unwrap();
-        let b64 = URL_SAFE_NO_PAD.encode(json);
-        format!("zks://{}", b64)
-    }
-
     pub fn from_str(s: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let b64 = s.strip_prefix("zks://").ok_or("Invalid ticket format")?;
         let json_bytes = URL_SAFE_NO_PAD.decode(b64)?;
         let ticket = serde_json::from_slice(&json_bytes)?;
         Ok(ticket)
+    }
+}
+
+impl std::fmt::Display for TransferTicket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let json = serde_json::to_string(self).map_err(|_| std::fmt::Error)?;
+        let b64 = URL_SAFE_NO_PAD.encode(json);
+        write!(f, "zks://{}", b64)
     }
 }
 
@@ -123,7 +125,7 @@ impl FileSender {
         let ciphertext = self
             .cipher
             .encrypt(&nonce, buffer.as_ref())
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
 
         Ok((ciphertext, nonce.to_vec()))
     }
@@ -195,7 +197,7 @@ impl FileReceiver {
             let plaintext = self
                 .cipher
                 .decrypt(nonce, data)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
 
             file.seek(std::io::SeekFrom::Start(offset)).await?;
             file.write_all(&plaintext).await?;
@@ -297,17 +299,16 @@ pub async fn run_send_file(
 
     while waiting_for_resume && start_wait.elapsed().as_secs() < 2 {
         if let Some(data) = relay.recv_raw_timeout(100).await {
-            if let Ok(msg) = serde_json::from_slice::<FileTransferMessage>(&data) {
-                if let FileTransferMessage::ResumeRequest {
-                    id: _,
-                    offset: req_offset,
-                } = msg
-                {
+            if let Ok(FileTransferMessage::ResumeRequest {
+                id: _,
+                offset: req_offset,
+            }) = serde_json::from_slice::<FileTransferMessage>(&data)
+            {
                     info!("Resuming transfer from offset {}", req_offset);
                     offset = req_offset;
                     waiting_for_resume = false;
                 }
-            }
+
         }
     }
 
