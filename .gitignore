@@ -30,3 +30,7 @@ worker/pkg/
 # Logs
 *.log
 npm-debug.log*
+# Sensitive files (added per request)
+*.key
+*.pub
+tamarin-results/
