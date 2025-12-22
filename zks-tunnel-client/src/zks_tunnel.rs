@@ -9,7 +9,9 @@
 //! - Swap transports (TCP/UDP/WebSocket/QUIC)
 //! - Add features like FEC without touching IO code
 
-use std::io;
+
+#![allow(dead_code)]
+
 use tracing::debug;
 
 /// Maximum packet size (MTU + headers)
@@ -291,7 +293,7 @@ mod tests {
                 // Payload MUST be different from plaintext (encrypted)
                 let encrypted_payload = &enc_buf[4..n];
                 assert_ne!(encrypted_payload, data);
-                
+
                 // Verify XOR encryption: payload[i] = data[i] ^ key[i % 32]
                 for (i, &byte) in data.iter().enumerate() {
                     assert_eq!(encrypted_payload[i], byte ^ key[i % 32]);
@@ -336,9 +338,9 @@ mod tests {
         let key1 = [0x11u8; 32];
         let key2 = [0x22u8; 32];
         let mut tunnel = ZksTunnel::new(key1);
-        
+
         assert_eq!(tunnel.key(), &key1);
-        
+
         tunnel.rotate_key(key2);
         assert_eq!(tunnel.key(), &key2);
     }
