@@ -23,10 +23,10 @@ jobs:
         
       - name: Run Timing Analysis
         run: |
-          cd zks-tunnel-core
+          cd zks-tunnel-client
           echo "=== Constant-Time Analysis ==="
           # Run timing tests for 10 seconds each
-          cargo test --release -- --test-threads=1 timing 2>&1 | tee timing_output.txt || true
+          cargo test --release ct_ops 2>&1 | tee timing_output.txt || true
           
           # Check for timing leaks
           if grep -q "Leaking" timing_output.txt; then
@@ -52,7 +52,7 @@ jobs:
         
       - name: Build and Generate Entropy
         run: |
-          cd zks-tunnel-core
+          cd zks-tunnel-client
           cargo build --release --example entropy_dump || echo "No entropy dump example yet"
           
       - name: Run Entropy Tests
