@@ -7,6 +7,20 @@
  * 
  * This model verifies the security properties of the ZKS handshake protocol
  * using Tamarin Prover's more expressive logic (compared to ProVerif).
+ *
+ * VERIFICATION SCOPE LIMITATION:
+ * ==============================
+ * This Tamarin model verifies the X25519 Diffie-Hellman component of the
+ * hybrid key exchange. The Kyber768 post-quantum component is:
+ * 
+ * 1. Abstracted in the ProVerif model (verification/zks_handshake.pv)
+ * 2. Formally verified by Barbosa et al. (Crypto 2024) using EasyCrypt
+ * 3. The pqcrypto-kyber implementation uses the NIST reference code
+ * 
+ * The hybrid combination (X25519 XOR Kyber) is secure if EITHER primitive
+ * is secure (belt-and-suspenders security).
+ *
+ * See: FIPS 203 (August 2024) for ML-KEM standardization
  */
 
 theory ZKS_Handshake

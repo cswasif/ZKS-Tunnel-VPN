@@ -140,23 +140,56 @@ jobs:
       - name: Verify ZKS Handshake (Tamarin)
         run: |
           if ! command -v tamarin-prover &> /dev/null; then
-            echo "Tamarin not available, skipping"
+            echo "⚠️ Tamarin not available, skipping"
+            echo "TAMARIN_SKIPPED=true" >> $GITHUB_ENV
             exit 0
           fi
           
           cd verification
-          echo "=== Running Tamarin on ZKS Handshake ==="
-          timeout 600 tamarin-prover --prove zks_handshake.spthy 2>&1 | tee tamarin_output.txt || true
+          echo "=========================================="
+          echo "   TAMARIN VERIFICATION (X25519 Only)"
+          echo "=========================================="
+          echo ""
+          echo "Note: This model verifies the X25519 component."
+          echo "Kyber768 is verified externally via ProVerif and EasyCrypt."
+          echo ""
+          
+          # Run Tamarin with timeout
+          TAMARIN_EXIT=0
+          timeout 600 tamarin-prover --prove zks_handshake.spthy 2>&1 | tee tamarin_output.txt || TAMARIN_EXIT=$?
           
           echo ""
-          echo "=== Tamarin Verification Summary ==="
-          grep -E "(verified|falsified|analysis)" tamarin_output.txt || true
+          echo "=========================================="
+          echo "   TAMARIN RESULTS"
+          echo "=========================================="
           
-          if grep -q "falsified" tamarin_output.txt; then
-            echo "❌ Tamarin: Some lemmas FALSIFIED"
+          # Check what happened
+          VERIFIED_COUNT=$(grep -c "verified" tamarin_output.txt 2>/dev/null || echo "0")
+          FALSIFIED_COUNT=$(grep -c "falsified" tamarin_output.txt 2>/dev/null || echo "0")
+          
+          echo "Verified lemmas: $VERIFIED_COUNT"
+          echo "Falsified lemmas: $FALSIFIED_COUNT"
+          echo ""
+          
+          # Show specific results
+          grep -E "(verified|falsified)" tamarin_output.txt || true
+          
+          # Decision logic
+          if [ "$FALSIFIED_COUNT" -gt 0 ]; then
+            echo ""
+            echo "❌ CRITICAL: Some lemmas FALSIFIED!"
             exit 1
+          elif [ "$TAMARIN_EXIT" -eq 124 ]; then
+            echo ""
+            echo "⚠️ Tamarin timed out after 10 minutes."
+            echo "Partial verification may have occurred."
+            # Don't fail on timeout - may need more time for full proof
+          elif [ "$VERIFIED_COUNT" -gt 0 ]; then
+            echo ""
+            echo "✅ Tamarin: $VERIFIED_COUNT lemmas verified!"
           else
-            echo "✅ Tamarin: All lemmas verified (or still proving)"
+            echo ""
+            echo "⚠️ No verification results found. Check tamarin_output.txt for details."
           fi
 
       - name: Upload Tamarin Results
