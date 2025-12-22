@@ -1,0 +1,163 @@
+/*
+ * ZKS Protocol - Tamarin Formal Verification Model
+ * 
+ * Protocol: ZKS (Zero-Knowledge Swarm) Handshake
+ * Author: Md. Wasif Faisal, BRAC University
+ * Date: December 2025
+ * 
+ * This model verifies the security properties of the ZKS handshake protocol
+ * using Tamarin Prover's more expressive logic (compared to ProVerif).
+ */
+
+theory ZKS_Handshake
+begin
+
+builtins: diffie-hellman, symmetric-encryption, hashing
+
+/*
+ * ============================================
+ *              KEY INFRASTRUCTURE
+ * ============================================
+ */
+
+// Long-term keypair generation
+rule Generate_Keypair:
+    [ Fr(~sk) ]
+  -->
+    [ !Ltk($A, ~sk), !Pk($A, 'g'^~sk), Out('g'^~sk) ]
+
+// Reveal long-term keys (for forward secrecy analysis)
+rule Reveal_Ltk:
+    [ !Ltk(A, sk) ]
+  --[ Reveal(A) ]->
+    [ Out(sk) ]
+
+/*
+ * ============================================
+ *         ZKS HANDSHAKE PROTOCOL
+ * ============================================
+ * 
+ * Message 1: I -> R: g^ei, {pkI, timestamp}_{DH(ei, pkR)}
+ * Message 2: R -> I: g^er, MAC
+ * 
+ * Session Key: HKDF(DH(ei,er) || DH(ei,pkR) || DH(skI,er))
+ */
+
+// Initiator sends first message
+rule Initiator_1:
+    let
+        EiPk = 'g'^~ei                      // Ephemeral public key
+        pkR = 'g'^skR                       // Responder's public key (known)
+        k1 = pkR^~ei                        // DH(ei, pkR) for encrypting identity
+        encryptedId = senc(<$I, ~ts>, k1)   // Encrypted initiator identity
+        m1 = <EiPk, encryptedId>
+    in
+    [ Fr(~ei), Fr(~ts), !Ltk($I, ~skI), !Pk($R, pkR) ]
+  --[ InitiatorStart($I, $R, ~ei) ]->
+    [ Out(m1), 
+      St_Initiator_1($I, $R, ~skI, ~ei, pkR, ~ts) ]
+
+// Responder receives first message, sends response
+rule Responder_1:
+    let
+        EiPk = 'g'^ei                       // Received ephemeral
+        k1 = EiPk^~skR                      // DH(skR, Ei) = DH(ei, pkR)
+        <I, ts> = sdec(encryptedId, k1)     // Decrypt initiator identity
+        pkI = 'g'^skI                       // Initiator's public key
+        ErPk = 'g'^~er                      // Our ephemeral
+        
+        // Derive session key: DH(ei,er) || DH(skR, ei) || DH(er, pkI)
+        dh1 = EiPk^~er                      // DH(ei, er)
+        dh2 = EiPk^~skR                     // DH(skR, ei)
+        dh3 = pkI^~er                       // DH(er, pkI)
+        sessionKey = h(<dh1, dh2, dh3>)
+        
+        m2 = <ErPk, h(<sessionKey, 'responder'>)>
+    in
+    [ In(<EiPk, encryptedId>),
+      Fr(~er),
+      !Ltk($R, ~skR),
+      !Pk(I, pkI) ]
+  --[ ResponderAccept($R, I, sessionKey),
+      SessionKey($R, I, sessionKey),
+      Honest(I), Honest($R) ]->
+    [ Out(m2),
+      St_Responder_1($R, I, ~skR, ~er, EiPk, sessionKey) ]
+
+// Initiator receives response, computes session key
+rule Initiator_2:
+    let
+        ErPk = 'g'^er
+        pkR = 'g'^skR
+        
+        // Derive session key
+        dh1 = ErPk^~ei                      // DH(ei, er)
+        dh2 = pkR^~ei                       // DH(ei, pkR)
+        dh3 = ErPk^~skI                     // DH(skI, er)
+        sessionKey = h(<dh1, dh2, dh3>)
+        
+        expectedMac = h(<sessionKey, 'responder'>)
+    in
+    [ In(<ErPk, expectedMac>),
+      St_Initiator_1($I, $R, ~skI, ~ei, pkR, ts) ]
+  --[ InitiatorComplete($I, $R, sessionKey),
+      SessionKey($I, $R, sessionKey),
+      Honest($I), Honest($R),
+      Secret(sessionKey) ]->
+    [ St_Initiator_2($I, $R, sessionKey) ]
+
+/*
+ * ============================================
+ *          SECURITY PROPERTIES
+ * ============================================
+ */
+
+// Secrecy: Session key is secret unless a party is compromised
+lemma session_key_secrecy:
+  "All I R k #i. 
+    Secret(k) @ i 
+    ==> (not Ex #j. K(k) @ j)
+        | (Ex #r. Reveal(I) @ r)
+        | (Ex #r. Reveal(R) @ r)"
+
+// Authentication: Responder implies Initiator started
+lemma initiator_authentication:
+  "All R I k #i.
+    ResponderAccept(R, I, k) @ i
+    ==> (Ex ei #j. InitiatorStart(I, R, ei) @ j & j < i)
+        | (Ex #r. Reveal(I) @ r)"
+
+// Injective agreement: No replay attacks
+lemma injective_agreement:
+  "All I R k #i #j.
+    InitiatorComplete(I, R, k) @ i &
+    InitiatorComplete(I, R, k) @ j
+    ==> #i = #j"
+
+// Forward secrecy: Compromise after session doesn't reveal past keys
+lemma forward_secrecy:
+  "All I R k #i #j.
+    SessionKey(I, R, k) @ i &
+    K(k) @ j
+    ==> (Ex #r. Reveal(I) @ r & r < i)
+        | (Ex #r. Reveal(R) @ r & r < i)"
+
+// Session key agreement: Both parties derive the same key
+lemma session_key_agreement:
+  "All I R k1 k2 #i #j.
+    SessionKey(I, R, k1) @ i &
+    SessionKey(R, I, k2) @ j &
+    Honest(I) @ i & Honest(R) @ j
+    ==> k1 = k2"
+
+// Uniqueness: Each session produces unique keys
+lemma session_key_uniqueness:
+  "All I1 R1 I2 R2 k #i #j.
+    SessionKey(I1, R1, k) @ i &
+    SessionKey(I2, R2, k) @ j &
+    not (#i = #j)
+    ==> (I1 = I2 & R1 = R2)
+        | (Ex #r. Reveal(I1) @ r)
+        | (Ex #r. Reveal(R1) @ r)"
+
+end

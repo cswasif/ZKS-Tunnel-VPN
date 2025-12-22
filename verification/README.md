@@ -1,27 +1,32 @@
 # ZKS Protocol Formal Verification
 
-This directory contains ProVerif models for formal verification of the ZKS protocol.
+This directory contains formal verification models for the ZKS protocol.
 
 ## Files
 
-- **`zks_handshake.pv`** - Main handshake protocol model
+- **`zks_handshake.pv`** - ProVerif model (automated verification)
+- **`zks_handshake.spthy`** - Tamarin model (stronger proofs)
 
 ## Prerequisites
 
-Install ProVerif:
-
-**Ubuntu/Debian:**
+### ProVerif
 ```bash
-sudo apt install proverif
-```
+# Ubuntu
+opam install proverif
 
-**macOS:**
-```bash
+# macOS  
 brew install proverif
 ```
 
-**Windows:**
-Download from: https://bblanche.gitlabpages.inria.fr/proverif/
+### Tamarin
+```bash
+# Ubuntu
+sudo apt install maude graphviz
+# Download from: https://github.com/tamarin-prover/tamarin-prover/releases
+
+# macOS
+brew install tamarin-prover
+```
 
 ## Running Verification
 

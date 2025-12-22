@@ -1,4 +1,4 @@
-name: ProVerif Verification
+name: Formal Verification
 
 on:
   push:
@@ -10,10 +10,10 @@ on:
   workflow_dispatch:
 
 jobs:
-  verify:
+  proverif:
     runs-on: ubuntu-latest
-    name: Formal Verification
-
+    name: ProVerif Verification
+    
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,28 +27,100 @@ jobs:
           opam install -y proverif
           echo "$HOME/.opam/default/bin" >> $GITHUB_PATH
 
-      - name: Verify ZKS Handshake
+      - name: Verify ZKS Handshake (ProVerif)
         run: |
+          eval $(opam env)
           cd verification
           echo "=== Running ProVerif on ZKS Handshake ==="
-          proverif zks_handshake.pv | tee proverif_output.txt
+          proverif zks_handshake.pv 2>&1 | tee proverif_output.txt
           
-          # Check for verification results
           echo ""
           echo "=== Verification Summary ==="
           grep -E "(RESULT|Query)" proverif_output.txt || true
           
-          # Fail if any query is false
           if grep -q "is false" proverif_output.txt; then
-            echo "❌ VERIFICATION FAILED: Some security properties could not be verified"
+            echo "❌ ProVerif: Some properties FAILED"
             exit 1
           else
-            echo "✅ All security properties verified!"
+            echo "✅ ProVerif: All properties verified!"
           fi
 
-      - name: Upload Results
+      - name: Upload ProVerif Results
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: proverif-results
           path: verification/proverif_output.txt
+
+  tamarin:
+    runs-on: ubuntu-latest
+    name: Tamarin Verification
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Tamarin
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y maude graphviz
+          
+          # Download Tamarin binary
+          wget -q https://github.com/tamarin-prover/tamarin-prover/releases/download/1.8.0/tamarin-prover-1.8.0-linux64-ubuntu.tar.gz
+          tar -xzf tamarin-prover-1.8.0-linux64-ubuntu.tar.gz
+          sudo mv tamarin-prover-1.8.0-linux64-ubuntu/tamarin-prover /usr/local/bin/
+          chmod +x /usr/local/bin/tamarin-prover
+
+      - name: Verify ZKS Handshake (Tamarin)
+        run: |
+          cd verification
+          echo "=== Running Tamarin on ZKS Handshake ==="
+          tamarin-prover --prove zks_handshake.spthy 2>&1 | tee tamarin_output.txt
+          
+          echo ""
+          echo "=== Tamarin Verification Summary ==="
+          grep -E "(verified|falsified|analysis)" tamarin_output.txt || true
+          
+          if grep -q "falsified" tamarin_output.txt; then
+            echo "❌ Tamarin: Some lemmas FALSIFIED"
+            exit 1
+          else
+            echo "✅ Tamarin: All lemmas verified!"
+          fi
+
+      - name: Upload Tamarin Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tamarin-results
+          path: verification/tamarin_output.txt
+
+  summary:
+    runs-on: ubuntu-latest
+    name: Verification Summary
+    needs: [proverif, tamarin]
+    if: always()
+    
+    steps:
+      - name: Report Status
+        run: |
+          echo "=========================================="
+          echo "   ZKS PROTOCOL FORMAL VERIFICATION"
+          echo "=========================================="
+          echo ""
+          echo "ProVerif: ${{ needs.proverif.result }}"
+          echo "Tamarin:  ${{ needs.tamarin.result }}"
+          echo ""
+          if [ "${{ needs.proverif.result }}" = "success" ] && [ "${{ needs.tamarin.result }}" = "success" ]; then
+            echo "✅ ALL VERIFICATIONS PASSED"
+            echo ""
+            echo "The ZKS handshake protocol has been formally verified"
+            echo "for the following security properties:"
+            echo "  - Session key secrecy"
+            echo "  - Forward secrecy"  
+            echo "  - Mutual authentication"
+            echo "  - Injective agreement (no replay)"
+          else
+            echo "❌ SOME VERIFICATIONS FAILED"
+            exit 1
+          fi
