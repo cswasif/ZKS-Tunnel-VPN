@@ -3,8 +3,6 @@
 //! Accepts encrypted IP packets over TCP from Cloudflare Tunnel.
 //! This separates data transfer (high bandwidth via Tunnel) from
 //! signaling (key exchange via WebSocket Worker).
-
-
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -20,8 +18,6 @@ pub struct HybridDataState {
     #[cfg(feature = "vpn")]
     pub tun_device: Option<Arc<tun_rs::AsyncDevice>>,
 }
-
-
 
 /// Run the hybrid data TCP listener
 ///

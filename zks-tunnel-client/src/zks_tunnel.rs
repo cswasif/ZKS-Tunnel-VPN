@@ -8,8 +8,6 @@
 //! - Unit test without mocking network
 //! - Swap transports (TCP/UDP/WebSocket/QUIC)
 //! - Add features like FEC without touching IO code
-
-
 #![allow(dead_code)]
 
 use tracing::debug;
