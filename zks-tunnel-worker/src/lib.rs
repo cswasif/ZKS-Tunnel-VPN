@@ -39,7 +39,58 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         );
     }
 
+    // Entropy Tax endpoint
+    if path.starts_with("/entropy") {
+        return handle_entropy(req).await;
+    }
+
     Response::error("Not Found. Use /tunnel for VPN connection.", 404)
+}
+
+/// Handle Entropy Tax requests
+async fn handle_entropy(req: Request) -> Result<Response> {
+    // 1. GET request: Fetch entropy (for Swarm Entropy)
+    if req.method() == Method::Get && !req.headers().has("Upgrade")? {
+        let mut entropy = [0u8; 32];
+        getrandom::getrandom(&mut entropy).unwrap_or_default();
+        let entropy_hex = hex::encode(&entropy);
+
+        return Response::ok(
+            serde_json::json!({
+                "entropy": entropy_hex,
+                "timestamp": Date::now().to_string()
+            })
+            .to_string(),
+        );
+    }
+
+    // 2. WebSocket request: Contribute entropy (Entropy Tax)
+    if req.headers().has("Upgrade")? {
+        let pair = WebSocketPair::new()?;
+        let server = pair.server;
+        server.accept()?;
+
+        // We don't need to do anything with the contribution for now
+        // just keep the connection open and ack messages
+        wasm_bindgen_futures::spawn_local(async move {
+            let mut event_stream = server.events().expect("could not open stream");
+            while let Some(event) = event_stream.next().await {
+                match event.expect("received error in websocket") {
+                    // Echo back ACK
+                    worker::WebsocketEvent::Message(msg) => {
+                        if let Some(text) = msg.text() {
+                            let _ = server.send_with_str(&format!("ACK: {}", text));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        return Response::from_websocket(pair.client);
+    }
+
+    Response::error("Method not allowed", 405)
 }
 
 /// Handle WebSocket tunnel upgrade
