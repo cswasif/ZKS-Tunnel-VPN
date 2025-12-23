@@ -1,0 +1,400 @@
+# ZKS Relay - Decentralized Signaling Server
+
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/zks-protocol/zks-relay)
+
+**ZKS Relay** is a Cloudflare Worker-based signaling server for the [ZKS (Zero-Knowledge Swarm) Protocol](https://github.com/zks-protocol). It provides WebSocket-based peer discovery and NAT traversal coordination for P2P VPN, file transfer, and mesh networking applications.
+
+## 🌟 Features
+
+- **Zero-Cost Operation:** Runs entirely on Cloudflare's free tier (Workers + Durable Objects)
+- **Global Edge Deployment:** Automatic deployment to 300+ cities worldwide
+- **Dual Protocol Mode:**
+  - **VPN Mode:** Classic client-relay-exit architecture (2 peers)
+  - **Swarm Mode:** Decentralized P2P mesh (unlimited peers)
+- **WebSocket Hibernation:** Dormant connections consume zero CPU
+- **Entropy Tax Pool:** Decentralized randomness aggregation for cryptographic keys
+- **DCUtR Hole Punching:** Coordinates simultaneous NAT traversal attempts
+
+---
+
+## 📐 Architecture
+
+```
+┌──────────┐        WebSocket        ┌────────────────────┐
+│  Client  │◄──────────────────────►│ Cloudflare Worker  │
+└──────────┘                         │  (ZKS Relay)       │
+                                     └─────────┬──────────┘
+                                               │
+                                     ┌─────────▼──────────┐
+                                     │ Durable Object     │
+                                     │ (VpnRoom)          │
+                                     │                    │
+                                     │ - Peer Sessions    │
+                                     │ - P2P Coordinates  │
+                                     │ - Message Relay    │
+                                     └────────────────────┘
+```
+
+### Components
+
+| File | Purpose |
+|------|---------|
+| **`lib.rs`** | Main entry point, routes requests to Durable Objects |
+| **`vpn_room.rs`** | Manages both VPN mode (2-peer) and Swarm mode (N-peer) |
+| **`relay_room.rs`** | Generic packet reflector for video/binary streams |
+| **`entropy_pool.rs`** | Aggregates entropy contributions for Entropy Tax system |
+
+---
+
+## 🚀 Deployment
+
+### Prerequisites
+
+- **Cloudflare Account** (free tier works)
+- **Wrangler CLI:** `npm install -g wrangler`
+
+### Steps
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/zks-protocol/zks-relay.git
+   cd zks-relay
+   ```
+
+2. **Authenticate with Cloudflare:**
+   ```bash
+   wrangler login
+   ```
+
+3. **Deploy to Cloudflare:**
+   ```bash
+   wrangler deploy
+   ```
+
+4. **Your relay is now live at:**
+   ```
+   https://zks-relay.<your-account>.workers.dev
+   ```
+
+### GitHub Actions (Auto-Deployment)
+
+Enable automatic deployment by adding `CF_API_TOKEN` as a repository secret:
+
+1. Get API token: [Cloudflare Dashboard → API Tokens](https://dash.cloudflare.com/profile/api-tokens)
+2. Add to GitHub: **Settings → Secrets → Actions → New repository secret**
+3. Push to `main` branch triggers deployment
+
+---
+
+## 🔌 API Reference
+
+### WebSocket Endpoints
+
+| Endpoint | Mode | Purpose |
+|----------|------|---------|
+| `wss://<relay>/room/<room_id>?role=client` | VPN | Connect as VPN client |
+| `wss://<relay>/room/<room_id>?role=exit` | VPN | Connect as VPN exit node |
+| `wss://<relay>/room/<room_id>?role=swarm` | Swarm | Connect to P2P mesh |
+| `wss://<relay>/entropy?peerId=<id>` | Entropy | Contribute to decentralized RNG |
+
+### VPN Mode (Legacy 2-Peer)
+
+In VPN mode, exactly two peers connect: one **Client** and one **Exit Peer**. The relay forwards encrypted packets between them without decryption.
+
+#### Client Messages
+
+```json
+{
+  "type": "ping"
+}
+```
+
+#### Server Events
+
+```json
+{
+  "type": "welcome",
+  "your_id": "Client-abc123",
+  "role": "Client",
+  "peer_connected": true
+}
+```
+
+```json
+{
+  "type": "peer_join",
+  "peer_id": "ExitPeer-def456",
+  "role": "ExitPeer"
+}
+```
+
+```json
+{
+  "type": "peer_leave",
+  "peer_id": "ExitPeer-def456",
+  "role": "ExitPeer"
+}
+```
+
+---
+
+### Swarm Mode (P2P Mesh)
+
+In Swarm mode, any number of peers can connect and discover each other for direct P2P connections.
+
+#### 1. Join Swarm
+
+**Client → Server:**
+```json
+{
+  "type": "join",
+  "peer_id": "12D3KooWABC...",
+  "addrs": [
+    "/ip4/192.168.1.5/udp/4001",
+    "/ip6/::1/udp/4001"
+  ],
+  "room_id": "my-swarm"
+}
+```
+
+**Server → Client:**
+```json
+{
+  "type": "joined",
+  "your_id": "12D3KooWABC..."
+}
+```
+
+#### 2. Get Peer List
+
+**Client → Server:**
+```json
+{
+  "type": "get_peers"
+}
+```
+
+**Server → Client:**
+```json
+{
+  "type": "peers",
+  "peers": [
+    {
+      "peer_id": "12D3KooWDEF...",
+      "addrs": ["/ip4/10.0.0.2/udp/4001"],
+      "role": "swarm"
+    },
+    {
+      "peer_id": "12D3KooWGHI...",
+      "addrs": ["/ip4/172.16.0.3/udp/4001"],
+      "role": "swarm"
+    }
+  ]
+}
+```
+
+#### 3. DCUtR Hole Punching
+
+**Client → Server:**
+```json
+{
+  "type": "hole_punch",
+  "target_peer_id": "12D3KooWDEF..."
+}
+```
+
+**Server → Client:**
+```json
+{
+  "type": "punch_at",
+  "timestamp_ms": 1735123456789,
+  "target_addrs": ["/ip4/10.0.0.2/udp/4001"]
+}
+```
+
+*At the specified timestamp, both peers simultaneously send UDP packets to each other's addresses, creating a bidirectional NAT mapping.*
+
+#### 4. Entropy Contribution
+
+**Client → Server:**
+```json
+{
+  "type": "entropy",
+  "entropy": "a1b2c3d4e5f6..."
+}
+```
+
+**Server → All Peers:**
+```json
+{
+  "type": "swarm_entropy",
+  "entropy": "a1b2c3d4e5f6..."
+}
+```
+
+---
+
+### Entropy Pool API
+
+The Entropy Pool aggregates random bytes from peers to provide decentralized randomness.
+
+#### HTTP Endpoint
+
+**Request:**
+```bash
+GET /entropy?size=32&n=10
+```
+
+**Response:**
+```json
+{
+  "entropy": [142, 57, 209, ...],
+  "contributors": 10,
+  "source": "xor_of_peers"
+}
+```
+
+**Parameters:**
+- `size` — Number of bytes to generate (default: 32)
+- `n` — Number of peer contributions to XOR (default: 10)
+
+#### WebSocket Contribution
+
+**Connect:**
+```
+wss://<relay>/entropy?peerId=<your_id>
+```
+
+**Send Entropy:**
+```json
+{
+  "type": "contribute",
+  "entropy": [0x1a, 0x2b, 0x3c, ...]
+}
+```
+
+**Acknowledgment:**
+```json
+{
+  "type": "contribution_ack",
+  "bytes_received": 32
+}
+```
+
+---
+
+## 🔐 Security Model
+
+### Zero-Knowledge Relay
+
+**ZKS Relay cannot decrypt VPN traffic**. It only sees:
+- Encrypted WebSocket messages
+- Peer IDs (ephemeral, rotated)
+- Connection timestamps
+
+All data is encrypted with the **Wasif-Vernam Cipher** before reaching the relay.
+
+### Entropy Tax Security
+
+The Entropy Tax system ensures no single entity controls randomness:
+
+- **Unpredictability:** Even if `N-1` peers are malicious, one honest peer ensures entropy is unpredictable.
+- **Commitment:** Hash commitments prevent adaptive attacks.
+- **Availability:** Protocol degrades gracefully if some peers fail to contribute.
+
+**Attack Probability:** To predict `K_Remote`, an adversary must control **all `N` selected peers**:
+
+```
+P(attack) = (M / T)^N
+```
+
+Where:
+- `M` = malicious peers
+- `T` = total peers
+- `N` = sample size (default: 10)
+
+Example: With 1000 total peers and 100 malicious:
+```
+P(attack) = (100/1000)^10 = 0.1^10 = 1e-10 (0.00000001%)
+```
+
+---
+
+## 📊 Performance
+
+| Metric | Value |
+|--------|-------|
+| **Latency** | < 50ms globally (Cloudflare Edge) |
+| **Throughput** | Unlimited (scales with Cloudflare) |
+| **Cost** | $0 (Free tier: 100k requests/day) |
+| **Connections** | Unlimited (Durable Objects Hibernation) |
+
+**Why It's Free:**
+- **Hibernation:** Idle connections use 0 CPU/memory
+- **Edge Caching:** Cloudflare's global CDN
+- **Durable Objects:** Persistent state without databases
+
+---
+
+## 🧪 Testing Locally
+
+**Run locally with Wrangler:**
+```bash
+wrangler dev
+```
+
+**Connect via WebSocket:**
+```javascript
+const ws = new WebSocket('ws://localhost:8787/room/test?role=swarm');
+
+ws.onopen = () => {
+  ws.send(JSON.stringify({
+    type: 'join',
+    peer_id: '12D3KooWTest',
+    addrs: ['/ip4/127.0.0.1/udp/4001'],
+    room_id: 'test'
+  }));
+};
+
+ws.onmessage = (e) => console.log('Received:', e.data);
+```
+
+---
+
+## 🔧 Configuration
+
+**`wrangler.toml`:**
+```toml
+name = "zks-relay"
+main = "src/lib.rs"
+compatibility_date = "2024-01-01"
+
+[[durable_objects.bindings]]
+name = "VPN_ROOM"
+class_name = "VpnRoom"
+
+[[durable_objects.bindings]]
+name = "ENTROPY_POOL"
+class_name = "EntropyPool"
+
+[env.production]
+route = "relay.zks-protocol.org/*"
+```
+
+---
+
+## 📚 Related Projects
+
+- **[zks-vpn](https://github.com/zks-protocol/zks-vpn)** — VPN client implementation
+- **[zks](https://github.com/zks-protocol/zks)** — Protocol specification
+- **[ZKS Protocol Paper](https://github.com/zks-protocol/zks/blob/main/ZKS_Protocol_Paper.md)** — Academic specification
+
+---
+
+## 📜 License
+
+**AGPLv3** — See [LICENSE](LICENSE)
+
+Part of the [ZKS Protocol](https://github.com/zks-protocol) project.
+
+© 2025 Md. Wasif Faisal, BRAC University
