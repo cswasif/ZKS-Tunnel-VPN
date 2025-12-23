@@ -91,7 +91,7 @@ where
     
     // Phase 3: Reveal entropy
     let local_entropy = entropy_tax.reveal(&peer_ids)?;
-    let reveal_event = EntropyEvent::reveal(our_peer_id, local_entropy);
+    let reveal_event = EntropyEvent::reveal(our_peer_id.clone(), local_entropy);
     let reveal_json = reveal_event.to_json()
         .map_err(|e| format!("Failed to serialize reveal: {}", e))?;
     
@@ -135,7 +135,7 @@ where
     info!("✅ All peers revealed, deriving remote key");
     
     // Phase 5: Derive remote key
-    let remote_key = entropy_tax.derive_remote_key(room_id, &peer_ids)?;
+    let remote_key = entropy_tax.derive_remote_key(&our_peer_id, room_id, &peer_ids)?;
     
     info!("🎉 Swarm Entropy collection complete! Derived 1MB remote key");
     

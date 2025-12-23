@@ -177,6 +177,7 @@ impl EntropyTax {
     /// Derive remote key from all collected entropy
     pub fn derive_remote_key(
         &mut self,
+        my_peer_id: &str,
         room_id: &str,
         expected_peers: &[String],
     ) -> Result<Vec<u8>, String> {
@@ -190,20 +191,22 @@ impl EntropyTax {
             return Err("Entropy collection timeout".to_string());
         }
 
-        // Combine all entropy: SHA256(e1 || e2 || ... || en || room_id)
+        // Combine all entropy: SHA256(sorted(e1, e2, ..., en) || room_id)
         let mut hasher = Sha256::new();
 
-        // Add our local entropy
-        hasher.update(&self.local_entropy);
+        // Collect all entropies (local + peers)
+        let mut all_entropies = Vec::new();
+        all_entropies.push((my_peer_id.to_string(), self.local_entropy));
 
-        // Add peer entropies in deterministic order (sorted by peer_id)
-        let mut peer_ids: Vec<_> = self.peer_entropies.keys().collect();
-        peer_ids.sort();
+        for (peer_id, entropy) in &self.peer_entropies {
+            all_entropies.push((peer_id.clone(), *entropy));
+        }
 
-        for peer_id in peer_ids {
-            if let Some(entropy) = self.peer_entropies.get(peer_id) {
-                hasher.update(entropy);
-            }
+        // Sort by peer_id to ensure deterministic order
+        all_entropies.sort_by(|a, b| a.0.cmp(&b.0));
+
+        for (_, entropy) in all_entropies {
+            hasher.update(&entropy);
         }
 
         // Add room_id for domain separation
@@ -212,11 +215,27 @@ impl EntropyTax {
         let combined: [u8; 32] = hasher.finalize().into();
         self.combined_entropy = Some(combined);
 
-        // Derive 1MB remote key using HKDF
-        let hk = Hkdf::<Sha256>::new(Some(b"swarm-entropy-v1"), &combined);
-        let mut remote_key = vec![0u8; REMOTE_KEY_SIZE];
-        hk.expand(b"zks-remote-key", &mut remote_key)
-            .expect("HKDF expansion should not fail with valid OKM size");
+        // Derive 1MB remote key using iterative HKDF
+        // HKDF with SHA256 has max output of 255 * 32 = 8160 bytes per call
+        // So we use multiple HKDF expansions with different context
+        let chunk_size: usize = 1024; // Safe size
+        let num_chunks = (REMOTE_KEY_SIZE + chunk_size - 1) / chunk_size;
+        let mut remote_key = Vec::with_capacity(REMOTE_KEY_SIZE);
+        
+        for i in 0..num_chunks {
+            let hk = Hkdf::<Sha256>::new(Some(b"swarm-entropy-v1"), &combined);
+            let context = format!("zks-remote-key-chunk-{}", i);
+            let remaining = REMOTE_KEY_SIZE.saturating_sub(remote_key.len());
+            let this_chunk_size = remaining.min(chunk_size);
+            // println!("Chunk {}: size {}", i, this_chunk_size);
+            let mut chunk = vec![0u8; this_chunk_size];
+            hk.expand(context.as_bytes(), &mut chunk)
+                .map_err(|e| format!("HKDF expand failed at chunk {} size {}: {:?}", i, this_chunk_size, e))
+                .expect("HKDF expansion should not fail");
+            remote_key.extend_from_slice(&chunk);
+        }
+        
+        remote_key.truncate(REMOTE_KEY_SIZE);
 
         self.remote_key = Some(remote_key.clone());
         self.state = EntropyState::Complete;
@@ -318,10 +337,10 @@ mod tests {
         // Derive remote keys
         let room_id = "test-room";
         let expected_peers = vec!["peer2".to_string()];
-        let key1 = peer1.derive_remote_key(room_id, &expected_peers).unwrap();
+        let key1 = peer1.derive_remote_key("peer1", room_id, &expected_peers).unwrap();
 
         let expected_peers = vec!["peer1".to_string()];
-        let key2 = peer2.derive_remote_key(room_id, &expected_peers).unwrap();
+        let key2 = peer2.derive_remote_key("peer2", room_id, &expected_peers).unwrap();
 
         // Both peers should derive the same key
         assert_eq!(key1, key2);
@@ -375,11 +394,25 @@ mod tests {
 
         // Try to derive key before all peers revealed
         let expected_peers = vec!["peer2".to_string()];
-        let result = tax.derive_remote_key("test-room", &expected_peers);
+        let result = tax.derive_remote_key("peer1", "test-room", &expected_peers);
 
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
             .contains("Not all peers have revealed"));
+    }
+
+    #[test]
+    fn test_hkdf_standalone() {
+        use hkdf::Hkdf;
+        use sha2::Sha256;
+        let ikm = [0u8; 32];
+        let hk = Hkdf::<Sha256>::new(None, &ikm);
+        let chunk_size = 32;
+        for i in 0..100 {
+            let context = format!("zks-remote-key-chunk-{}", i);
+            let mut okm = vec![0u8; chunk_size];
+            hk.expand(context.as_bytes(), &mut okm).expect("HKDF loop failed");
+        }
     }
 }
