@@ -51,8 +51,9 @@ impl ReplayProtection {
     pub fn check_and_record(&mut self, nonce: &[u8; 12]) -> bool {
         let now = Instant::now();
 
-        // Cleanup old nonces periodically
-        if now.duration_since(self.last_cleanup) > CLEANUP_INTERVAL {
+        // Cleanup old nonces periodically (cleanup interval is half of max_age, capped at CLEANUP_INTERVAL)
+        let cleanup_interval = self.max_age.min(CLEANUP_INTERVAL) / 2;
+        if now.duration_since(self.last_cleanup) > cleanup_interval {
             self.cleanup_old_nonces();
             self.last_cleanup = now;
         }
@@ -144,7 +145,7 @@ mod tests {
         assert_eq!(rp.len(), 1);
 
         // Wait for nonce to expire
-        std::thread::sleep(Duration::from_millis(150));
+        std::thread::sleep(Duration::from_millis(300));
 
         // Trigger cleanup by checking another nonce
         let nonce2 = [4u8; 12];

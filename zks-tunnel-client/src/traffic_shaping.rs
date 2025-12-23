@@ -1,4 +1,5 @@
 //! Traffic Shaping Module
+#![allow(dead_code)]
 //!
 //! Implements WTF-PAD (Website Traffic Fingerprinting Protection with Adaptive Defense)
 //! for censorship resistance with minimal performance overhead.
@@ -90,7 +91,7 @@ impl BufferPool {
     /// Create new buffer pool with pre-allocated padding
     pub fn new() -> Self {
         let mut pools = [Vec::new(), Vec::new(), Vec::new()];
-        
+
         // Pre-allocate 10 buffers per size
         for (i, &size) in PACKET_SIZES.iter().enumerate() {
             for _ in 0..10 {
@@ -100,22 +101,23 @@ impl BufferPool {
                 pools[i].push(buf);
             }
         }
-        
+
         Self { pools }
     }
 
     /// Get a buffer of the specified size (reuse if available)
     pub fn get(&mut self, size: usize) -> Vec<u8> {
-        let pool_idx = PACKET_SIZES
-            .iter()
-            .position(|&s| s == size)
-            .unwrap_or(2);
-        
-        self.pools[pool_idx].pop().unwrap_or_else(|| {
-            let mut buf = vec![0u8; size];
-            getrandom::getrandom(&mut buf).ok();
-            buf
-        })
+        let pool_idx = PACKET_SIZES.iter().position(|&s| s == size).unwrap_or(2);
+
+        let mut buf = self.pools[pool_idx]
+            .pop()
+            .unwrap_or_else(|| Vec::with_capacity(size));
+
+        // Ensure buffer is correct size and filled with random data
+        // (reused buffers are empty but have capacity)
+        buf.resize(size, 0);
+        getrandom::getrandom(&mut buf).ok();
+        buf
     }
 
     /// Return a buffer to the pool for reuse
@@ -166,7 +168,7 @@ impl TrafficShaper {
 
         if target_size > current_size {
             // Extend with random padding (zero-copy from pool)
-            let padding_len = target_size - current_size;
+            let _padding_len = target_size - current_size;
             let padding_buf = self.buffer_pool.get(target_size);
             packet.extend_from_slice(&padding_buf[current_size..target_size]);
             self.buffer_pool.return_buf(padding_buf);
@@ -391,21 +393,27 @@ mod tests {
 
     #[tokio::test]
     async fn test_timing_shaper() {
-        let config = TrafficShapingConfig::balanced();
+        let config = TrafficShapingConfig::stealth();
         let mut shaper = TimingShaper::new(config);
 
         let mut output = Vec::new();
         let packet = vec![1, 2, 3, 4];
 
         // Send packet
-        shaper.send_with_shaping(&mut output, packet.clone()).await.unwrap();
+        shaper
+            .send_with_shaping(&mut output, packet.clone())
+            .await
+            .unwrap();
 
         // Should be batched (not sent yet)
         assert_eq!(output.len(), 0);
 
         // Send more packets to fill batch
         for _ in 0..config.batch_size {
-            shaper.send_with_shaping(&mut output, packet.clone()).await.unwrap();
+            shaper
+                .send_with_shaping(&mut output, packet.clone())
+                .await
+                .unwrap();
         }
 
         // Should be sent now

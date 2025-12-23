@@ -269,7 +269,8 @@ impl KeyExchange {
             let pk_array = ml_kem::array::Array::try_from(pk_bytes.as_slice())
                 .map_err(|_| "Invalid Kyber public key length")?;
             let pk = EncapsulationKey::<MlKem768Params>::from_bytes(&pk_array);
-            let (ct, ss) = pk.encapsulate(&mut OsRng)
+            let (ct, ss) = pk
+                .encapsulate(&mut OsRng)
                 .map_err(|_| "Kyber encapsulation failed")?;
             self.kyber_shared_secret = Some(ss);
             self.peer_kyber_public = Some(pk);
@@ -412,7 +413,8 @@ impl KeyExchange {
             let ct = Ciphertext::<MlKem768>::try_from(ct_bytes.as_slice())
                 .map_err(|_| "Invalid Kyber ciphertext")?;
             let sk = self.kyber_secret.as_ref().ok_or("No Kyber secret key")?;
-            let ss = sk.decapsulate(&ct)
+            let ss = sk
+                .decapsulate(&ct)
                 .map_err(|_| "Kyber decapsulation failed")?;
             self.kyber_shared_secret = Some(ss);
         }
@@ -462,7 +464,7 @@ impl KeyExchange {
         mac.update(b"responder_auth");
 
         let expected_mac = mac.finalize().into_bytes();
-        
+
         // SECURITY: Use constant-time comparison to prevent timing attacks
         if expected_mac.ct_eq(mac_bytes).into() {
             Ok(())
@@ -526,7 +528,7 @@ impl KeyExchange {
         mac.update(b"initiator_confirm");
 
         let expected_mac = mac.finalize().into_bytes();
-        
+
         // SECURITY: Use constant-time comparison to prevent timing attacks
         let is_equal: bool = expected_mac.ct_eq(&confirm_mac[..]).into();
         if !is_equal {

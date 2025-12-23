@@ -13,7 +13,7 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 /// TLS content types
 #[allow(dead_code)]
-#[allow(dead_code)]
+
 const TLS_CONTENT_TYPE_HANDSHAKE: u8 = 0x16;
 #[allow(dead_code)]
 const TLS_CONTENT_TYPE_APPLICATION: u8 = 0x17;
@@ -143,6 +143,7 @@ pub struct SniInjector {
     target_domain: String,
 }
 
+#[allow(dead_code)]
 impl SniInjector {
     /// Create new SNI injector
     pub fn new(target_domain: String) -> Self {
@@ -255,6 +256,7 @@ pub struct CombinedTlsMimicry {
     dummy_generator: DummyPacketGenerator,
 }
 
+#[allow(dead_code)]
 impl CombinedTlsMimicry {
     /// Create new combined TLS mimicry
     pub fn new(config: TlsMimicryConfig) -> Self {
@@ -271,10 +273,9 @@ impl CombinedTlsMimicry {
 
     /// Wrap handshake with TLS framing and SNI
     pub fn wrap_handshake_with_sni(&mut self, zks_message: &[u8]) -> Vec<u8> {
-        let mut wrapped = self.tls_mimicry.wrap_handshake(zks_message);
         // Note: SNI injection would require parsing TLS ClientHello structure
         // For now, we just wrap in TLS record layer
-        wrapped
+        self.tls_mimicry.wrap_handshake(zks_message)
     }
 
     /// Wrap application data with TLS framing
@@ -312,7 +313,10 @@ mod tests {
         // Check TLS record header
         assert_eq!(wrapped[0], TLS_CONTENT_TYPE_APPLICATION);
         assert_eq!(&wrapped[1..3], &TLS_VERSION_1_2);
-        assert_eq!(u16::from_be_bytes([wrapped[3], wrapped[4]]), payload.len() as u16);
+        assert_eq!(
+            u16::from_be_bytes([wrapped[3], wrapped[4]]),
+            payload.len() as u16
+        );
 
         // Check payload
         assert_eq!(&wrapped[5..], payload);

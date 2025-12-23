@@ -8,7 +8,7 @@
 //!
 //! Protocol:
 //! 1. Each peer generates 32 bytes local entropy
-//! 2. Commit phase: Peers send SHA256(entropy) 
+//! 2. Commit phase: Peers send SHA256(entropy)
 //! 3. Reveal phase: After all committed, peers send actual entropy
 //! 4. Verify: Check commitments match revealed entropy
 //! 5. Combine: SHA256(e1 || e2 || ... || room_id)
@@ -67,8 +67,7 @@ impl EntropyTax {
     /// Create new entropy tax with locally generated entropy
     pub fn new() -> Self {
         let mut local_entropy = [0u8; ENTROPY_SIZE];
-        getrandom::getrandom(&mut local_entropy)
-            .expect("Failed to generate random entropy");
+        getrandom::getrandom(&mut local_entropy).expect("Failed to generate random entropy");
 
         // Compute commitment (SHA256 hash)
         let mut hasher = Sha256::new();
@@ -221,7 +220,7 @@ impl EntropyTax {
         let chunk_size: usize = 1024; // Safe size
         let num_chunks = (REMOTE_KEY_SIZE + chunk_size - 1) / chunk_size;
         let mut remote_key = Vec::with_capacity(REMOTE_KEY_SIZE);
-        
+
         for i in 0..num_chunks {
             let hk = Hkdf::<Sha256>::new(Some(b"swarm-entropy-v1"), &combined);
             let context = format!("zks-remote-key-chunk-{}", i);
@@ -230,11 +229,16 @@ impl EntropyTax {
             // println!("Chunk {}: size {}", i, this_chunk_size);
             let mut chunk = vec![0u8; this_chunk_size];
             hk.expand(context.as_bytes(), &mut chunk)
-                .map_err(|e| format!("HKDF expand failed at chunk {} size {}: {:?}", i, this_chunk_size, e))
+                .map_err(|e| {
+                    format!(
+                        "HKDF expand failed at chunk {} size {}: {:?}",
+                        i, this_chunk_size, e
+                    )
+                })
                 .expect("HKDF expansion should not fail");
             remote_key.extend_from_slice(&chunk);
         }
-        
+
         remote_key.truncate(REMOTE_KEY_SIZE);
 
         self.remote_key = Some(remote_key.clone());
@@ -337,10 +341,14 @@ mod tests {
         // Derive remote keys
         let room_id = "test-room";
         let expected_peers = vec!["peer2".to_string()];
-        let key1 = peer1.derive_remote_key("peer1", room_id, &expected_peers).unwrap();
+        let key1 = peer1
+            .derive_remote_key("peer1", room_id, &expected_peers)
+            .unwrap();
 
         let expected_peers = vec!["peer1".to_string()];
-        let key2 = peer2.derive_remote_key("peer2", room_id, &expected_peers).unwrap();
+        let key2 = peer2
+            .derive_remote_key("peer2", room_id, &expected_peers)
+            .unwrap();
 
         // Both peers should derive the same key
         assert_eq!(key1, key2);
@@ -382,9 +390,7 @@ mod tests {
         let result = tax.reveal(&expected_peers);
 
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .contains("Not all peers have committed"));
+        assert!(result.unwrap_err().contains("Not all peers have committed"));
     }
 
     #[test]
@@ -397,9 +403,7 @@ mod tests {
         let result = tax.derive_remote_key("peer1", "test-room", &expected_peers);
 
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .contains("Not all peers have revealed"));
+        assert!(result.unwrap_err().contains("Not all peers have revealed"));
     }
 
     #[test]
@@ -412,7 +416,8 @@ mod tests {
         for i in 0..100 {
             let context = format!("zks-remote-key-chunk-{}", i);
             let mut okm = vec![0u8; chunk_size];
-            hk.expand(context.as_bytes(), &mut okm).expect("HKDF loop failed");
+            hk.expand(context.as_bytes(), &mut okm)
+                .expect("HKDF loop failed");
         }
     }
 }

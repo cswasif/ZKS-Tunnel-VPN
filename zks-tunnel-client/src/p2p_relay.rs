@@ -263,7 +263,7 @@ pub struct P2PRelay {
 }
 
 /// Discover peers from relay messages (welcome + peer_join events)
-/// 
+///
 /// Listens to the WebSocket stream for a specified duration to collect peer IDs
 /// from welcome and peer_join messages sent by the relay.
 async fn discover_peers_from_relay<S>(
@@ -274,9 +274,9 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     use tokio::time::timeout;
-    
+
     let mut peer_ids = Vec::new();
-    
+
     // Listen for messages for the specified duration
     let discovery_result = timeout(timeout_duration, async {
         while let Some(msg) = reader.next().await {
@@ -290,7 +290,7 @@ where
                             // Welcome doesn't contain peer list in current implementation
                             continue;
                         }
-                        
+
                         // Check for peer_join message
                         if json["type"] == "peer_join" {
                             if let Some(peer_id) = json["peer_id"].as_str() {
@@ -302,15 +302,16 @@ where
                 }
                 Message::Close(_) => {
                     return Err::<(), Box<dyn std::error::Error + Send + Sync>>(
-                        "Connection closed during peer discovery".into()
+                        "Connection closed during peer discovery".into(),
                     );
                 }
                 _ => {}
             }
         }
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-    }).await;
-    
+    })
+    .await;
+
     // Timeout is expected - we're just collecting peers for a fixed duration
     match discovery_result {
         Ok(_) | Err(_) => {
@@ -319,8 +320,6 @@ where
         }
     }
 }
-
-
 
 #[allow(dead_code)]
 impl P2PRelay {
@@ -360,7 +359,7 @@ impl P2PRelay {
             // Explicit DNS resolution with retry logic
             info!("Resolving hostname: {}:{}", host, port);
             let addr_str = format!("{}:{}", host, port);
-            
+
             let mut attempts = 0;
             let socket_addr = loop {
                 match tokio::net::lookup_host(&addr_str).await {
@@ -374,15 +373,22 @@ impl P2PRelay {
                     }
                     Err(e) if attempts < 3 => {
                         attempts += 1;
-                        warn!("DNS lookup attempt {} failed for {}: {}. Retrying in 2s...", attempts, host, e);
+                        warn!(
+                            "DNS lookup attempt {} failed for {}: {}. Retrying in 2s...",
+                            attempts, host, e
+                        );
                         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
                     }
                     Err(e) => {
-                        return Err(format!("Failed to resolve {} after {} attempts: {}", host, attempts, e).into());
+                        return Err(format!(
+                            "Failed to resolve {} after {} attempts: {}",
+                            host, attempts, e
+                        )
+                        .into());
                     }
                 }
             };
-            
+
             info!("Connecting to {}...", socket_addr);
             let tcp_stream = TcpStream::connect(socket_addr).await?;
 
@@ -562,25 +568,32 @@ impl P2PRelay {
         if encryption_key.len() >= 32 {
             shared_secret.copy_from_slice(&encryption_key[0..32]);
         }
-        
+
         // === Swarm Entropy Collection ===
         // Collect entropy from peers in room for information-theoretic security
         info!("🎲 Discovering peers for Swarm Entropy collection...");
-        
+
         // Discover peers from relay messages (welcome + peer_join events)
         let peer_ids = discover_peers_from_relay(&mut reader, Duration::from_secs(2)).await?;
-        
+
         let remote_key = if !peer_ids.is_empty() {
             use crate::swarm_entropy_collection::collect_swarm_entropy_via_relay;
-            
-            info!("🎲 Starting Swarm Entropy collection with {} peers...", peer_ids.len());
-            match collect_swarm_entropy_via_relay(&mut writer, &mut reader, room_id, peer_ids).await {
+
+            info!(
+                "🎲 Starting Swarm Entropy collection with {} peers...",
+                peer_ids.len()
+            );
+            match collect_swarm_entropy_via_relay(&mut writer, &mut reader, room_id, peer_ids).await
+            {
                 Ok(key) => {
                     info!("✅ Swarm Entropy collected! Information-theoretic security ACTIVE");
                     key
                 }
                 Err(e) => {
-                    warn!("⚠️  Failed to collect Swarm Entropy: {}. Falling back to ChaCha20-only", e);
+                    warn!(
+                        "⚠️  Failed to collect Swarm Entropy: {}. Falling back to ChaCha20-only",
+                        e
+                    );
                     Vec::new()
                 }
             }
@@ -588,7 +601,7 @@ impl P2PRelay {
             info!("ℹ️  No peers in room yet, using ChaCha20-only (will upgrade when peers join)");
             Vec::new()
         };
-        
+
         let mut keys = WasifVernam::new(shared_secret, remote_key);
 
         // === Swarm Entropy Synchronization ===

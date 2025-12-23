@@ -46,13 +46,13 @@ mod p2p_swarm;
 #[cfg(feature = "swarm")]
 mod onion;
 
-mod replay_protection;
-mod key_rotation;
-mod entropy_tax;
 mod entropy_events;
+mod entropy_tax;
+mod key_rotation;
+mod replay_protection;
 pub mod swarm_entropy_collection;
-mod traffic_shaping;
 mod tls_mimicry;
+mod traffic_shaping;
 
 #[cfg(feature = "swarm")]
 #[cfg(feature = "swarm")]
@@ -277,7 +277,7 @@ async fn main() -> Result<(), BoxError> {
             return exit_node_udp::run_exit_node_udp(args.listen_port).await;
         }
         Mode::ExitPeerHybrid => {
-            let room_id = args.room.clone().unwrap_or_else(|| "default".to_string());
+            let _room_id = args.room.clone().unwrap_or_else(|| "default".to_string());
             #[cfg(feature = "vpn")]
             {
                 return run_exit_peer_hybrid_mode(args, room_id).await;
