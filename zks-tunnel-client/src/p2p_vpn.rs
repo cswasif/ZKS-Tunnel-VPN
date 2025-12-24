@@ -44,11 +44,10 @@ mod implementation {
     use tokio::io::unix::AsyncFd;
 
     // Platform-specific routing modules
-    #[cfg(target_os = "windows")]
-    use crate::windows_routing;
     #[cfg(target_os = "linux")]
     use crate::linux_routing;
-
+    #[cfg(target_os = "windows")]
+    use crate::windows_routing;
 
     /// Abstract writer for TUN device (Single or Multi-Queue)
     #[derive(Clone)]
@@ -716,7 +715,10 @@ mod implementation {
                                     ) {
                                         warn!("Failed to add relay route via Win32 API: {}", e);
                                     } else {
-                                        info!("✅ Added relay route: {} via {} (Win32 API)", relay_ip, orig_gw);
+                                        info!(
+                                            "✅ Added relay route: {} via {} (Win32 API)",
+                                            relay_ip, orig_gw
+                                        );
                                     }
                                     break;
                                 }

@@ -21,7 +21,7 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 pub async fn add_default_route(gateway: Ipv4Addr, interface_index: u32, metric: u32) -> Result<()> {
     let (connection, handle, _) = new_connection()?;
     tokio::spawn(connection);
-    
+
     // Add default route (0.0.0.0/0)
     handle
         .route()
@@ -33,7 +33,7 @@ pub async fn add_default_route(gateway: Ipv4Addr, interface_index: u32, metric: 
         .priority(metric)
         .execute()
         .await?;
-    
+
     info!(
         "✅ Added default route via {} (IF: {}, metric: {})",
         gateway, interface_index, metric
@@ -52,7 +52,7 @@ pub async fn add_route(
 ) -> Result<()> {
     let (connection, handle, _) = new_connection()?;
     tokio::spawn(connection);
-    
+
     handle
         .route()
         .add()
@@ -63,14 +63,10 @@ pub async fn add_route(
         .priority(metric)
         .execute()
         .await?;
-    
+
     info!(
         "✅ Added route {}/{} via {} (IF: {}, metric: {})",
-        destination,
-        prefix_len,
-        gateway,
-        interface_index,
-        metric
+        destination, prefix_len, gateway, interface_index, metric
     );
     Ok(())
 }
@@ -80,10 +76,10 @@ pub async fn add_route(
 pub async fn delete_default_route(gateway: Ipv4Addr) -> Result<()> {
     let (connection, handle, _) = new_connection()?;
     tokio::spawn(connection);
-    
+
     // Get all IPv4 routes
     let mut routes = handle.route().get(IpVersion::V4).execute();
-    
+
     // Find and delete default route
     while let Some(route) = routes.try_next().await? {
         // Check if this is a default route (0.0.0.0/0)
@@ -100,23 +96,19 @@ pub async fn delete_default_route(gateway: Ipv4Addr) -> Result<()> {
             }
         }
     }
-    
+
     debug!("Default route via {} not found", gateway);
     Ok(())
 }
 
 /// Delete a specific route via netlink
 #[cfg(target_os = "linux")]
-pub async fn delete_route(
-    destination: Ipv4Addr,
-    prefix_len: u8,
-    gateway: Ipv4Addr,
-) -> Result<()> {
+pub async fn delete_route(destination: Ipv4Addr, prefix_len: u8, gateway: Ipv4Addr) -> Result<()> {
     let (connection, handle, _) = new_connection()?;
     tokio::spawn(connection);
-    
+
     let mut routes = handle.route().get(IpVersion::V4).execute();
-    
+
     while let Some(route) = routes.try_next().await? {
         if let Some(dest) = route.destination_prefix() {
             if dest.prefix_len == prefix_len {
@@ -137,7 +129,10 @@ pub async fn delete_route(
             }
         }
     }
-    
-    debug!("Route {}/{} via {} not found", destination, prefix_len, gateway);
+
+    debug!(
+        "Route {}/{} via {} not found",
+        destination, prefix_len, gateway
+    );
     Ok(())
 }

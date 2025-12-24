@@ -44,10 +44,10 @@ mod tun_multiqueue;
 mod userspace_nat;
 
 // Platform-specific routing modules
-#[cfg(all(target_os = "windows", feature = "vpn"))]
-mod windows_routing;
 #[cfg(all(target_os = "linux", feature = "vpn"))]
 mod linux_routing;
+#[cfg(all(target_os = "windows", feature = "vpn"))]
+mod windows_routing;
 
 #[cfg(feature = "swarm")]
 mod p2p_swarm;
@@ -264,7 +264,7 @@ async fn main() -> Result<(), BoxError> {
                 error!("Room ID required for Exit Peer VPN mode. Use --room <id>");
                 std::process::exit(1);
             });
-            
+
             #[cfg(feature = "vpn")]
             {
                 info!("Running Exit Peer in VPN mode (TUN device enabled)");

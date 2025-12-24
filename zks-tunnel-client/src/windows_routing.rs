@@ -10,14 +10,14 @@ use tracing::{debug, error, info};
 
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::{
-    Foundation::{ERROR_SUCCESS, ERROR_BUFFER_OVERFLOW, ERROR_NO_DATA},
+    Foundation::{ERROR_BUFFER_OVERFLOW, ERROR_NO_DATA, ERROR_SUCCESS},
     NetworkManagement::IpHelper::{
-        CreateIpForwardEntry2, DeleteIpForwardEntry2, InitializeIpForwardEntry,
-        MIB_IPFORWARD_ROW2, GetAdaptersAddresses, IP_ADAPTER_ADDRESSES_LH,
-        GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST, GAA_FLAG_SKIP_DNS_SERVER,
-        GAA_FLAG_SKIP_FRIENDLY_NAME,
+        CreateIpForwardEntry2, DeleteIpForwardEntry2, GetAdaptersAddresses,
+        InitializeIpForwardEntry, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER,
+        GAA_FLAG_SKIP_FRIENDLY_NAME, GAA_FLAG_SKIP_MULTICAST, IP_ADAPTER_ADDRESSES_LH,
+        MIB_IPFORWARD_ROW2,
     },
-    Networking::WinSock::{AF_INET, AF_UNSPEC, MIB_IPPROTO_NETMGMT, NlroManual},
+    Networking::WinSock::{NlroManual, AF_INET, AF_UNSPEC, MIB_IPPROTO_NETMGMT},
 };
 
 #[cfg(target_os = "windows")]
@@ -30,12 +30,12 @@ pub fn get_tun_interface_index(name_pattern: &str) -> Result<u32> {
         const BUFFER_SIZE: usize = 15 * 1024;
         let mut buffer: Vec<u8> = vec![0; BUFFER_SIZE];
         let mut buffer_size = buffer.len() as u32;
-        
-        let flags = GAA_FLAG_SKIP_ANYCAST 
-            | GAA_FLAG_SKIP_MULTICAST 
-            | GAA_FLAG_SKIP_DNS_SERVER 
+
+        let flags = GAA_FLAG_SKIP_ANYCAST
+            | GAA_FLAG_SKIP_MULTICAST
+            | GAA_FLAG_SKIP_DNS_SERVER
             | GAA_FLAG_SKIP_FRIENDLY_NAME;
-        
+
         let status = GetAdaptersAddresses(
             AF_UNSPEC as u32,
             flags,
@@ -43,7 +43,7 @@ pub fn get_tun_interface_index(name_pattern: &str) -> Result<u32> {
             buffer.as_mut_ptr() as *mut IP_ADAPTER_ADDRESSES_LH,
             &raw mut buffer_size,
         );
-        
+
         if status != ERROR_SUCCESS {
             if status == ERROR_BUFFER_OVERFLOW {
                 buffer.resize(buffer_size as usize, 0);
@@ -63,27 +63,30 @@ pub fn get_tun_interface_index(name_pattern: &str) -> Result<u32> {
                 return Err(format!("GetAdaptersAddresses failed: {}", status).into());
             }
         }
-        
+
         let mut adapter = buffer.as_ptr() as *const IP_ADAPTER_ADDRESSES_LH;
         while !adapter.is_null() {
             let adapter_ref = &*adapter;
-            
+
             // Get adapter name (FriendlyName would be null due to flag, use AdapterName)
             if !adapter_ref.AdapterName.is_null() {
                 let adapter_name = std::ffi::CStr::from_ptr(adapter_ref.AdapterName as *const i8)
                     .to_string_lossy();
-                
+
                 // Check if adapter name contains the pattern (e.g., "tun")
-                if adapter_name.to_lowercase().contains(&name_pattern.to_lowercase()) {
+                if adapter_name
+                    .to_lowercase()
+                    .contains(&name_pattern.to_lowercase())
+                {
                     let index = adapter_ref.Anonymous1.Anonymous.IfIndex;
                     info!("Found TUN adapter: {} (index: {})", adapter_name, index);
                     return Ok(index);
                 }
             }
-            
+
             adapter = adapter_ref.Next;
         }
-        
+
         Err(format!("No adapter matching '{}' found", name_pattern).into())
     }
 }
@@ -99,13 +102,13 @@ pub fn add_route(
 ) -> Result<()> {
     unsafe {
         let mut row: MIB_IPFORWARD_ROW2 = std::mem::zeroed();
-        
+
         // Initialize the row structure
         InitializeIpForwardEntry(&raw mut row);
-        
+
         // Set interface
         row.InterfaceIndex = interface_index;
-        
+
         // Set destination prefix
         row.DestinationPrefix.Prefix.Ipv4.sin_family = AF_INET;
         let dest_bytes = destination.octets();
@@ -113,10 +116,10 @@ pub fn add_route(
         row.DestinationPrefix.Prefix.Ipv4.sin_addr.S_un.S_un_b.s_b2 = dest_bytes[1];
         row.DestinationPrefix.Prefix.Ipv4.sin_addr.S_un.S_un_b.s_b3 = dest_bytes[2];
         row.DestinationPrefix.Prefix.Ipv4.sin_addr.S_un.S_un_b.s_b4 = dest_bytes[3];
-        
+
         // Calculate prefix length from netmask
         row.DestinationPrefix.PrefixLength = netmask_to_prefix_len(netmask);
-        
+
         // Set next hop (gateway)
         row.NextHop.Ipv4.sin_family = AF_INET;
         let gw_bytes = gateway.octets();
@@ -124,24 +127,20 @@ pub fn add_route(
         row.NextHop.Ipv4.sin_addr.S_un.S_un_b.s_b2 = gw_bytes[1];
         row.NextHop.Ipv4.sin_addr.S_un.S_un_b.s_b3 = gw_bytes[2];
         row.NextHop.Ipv4.sin_addr.S_un.S_un_b.s_b4 = gw_bytes[3];
-        
+
         // Set metric
         row.Metric = metric;
-        
+
         // Set protocol and origin
         row.Protocol = MIB_IPPROTO_NETMGMT;
         row.Origin = NlroManual;
-        
+
         let status = CreateIpForwardEntry2(&raw const row);
-        
+
         if status == ERROR_SUCCESS {
             info!(
                 "✅ Added route {}/{} via {} (IF: {}, metric: {})",
-                destination,
-                row.DestinationPrefix.PrefixLength,
-                gateway,
-                interface_index,
-                metric
+                destination, row.DestinationPrefix.PrefixLength, gateway, interface_index, metric
             );
             Ok(())
         } else {
@@ -162,10 +161,10 @@ pub fn delete_route(
 ) -> Result<()> {
     unsafe {
         let mut row: MIB_IPFORWARD_ROW2 = std::mem::zeroed();
-        
+
         // Set interface
         row.InterfaceIndex = interface_index;
-        
+
         // Set destination
         row.DestinationPrefix.Prefix.Ipv4.sin_family = AF_INET;
         let dest_bytes = destination.octets();
@@ -173,9 +172,9 @@ pub fn delete_route(
         row.DestinationPrefix.Prefix.Ipv4.sin_addr.S_un.S_un_b.s_b2 = dest_bytes[1];
         row.DestinationPrefix.Prefix.Ipv4.sin_addr.S_un.S_un_b.s_b3 = dest_bytes[2];
         row.DestinationPrefix.Prefix.Ipv4.sin_addr.S_un.S_un_b.s_b4 = dest_bytes[3];
-        
+
         row.DestinationPrefix.PrefixLength = netmask_to_prefix_len(netmask);
-        
+
         // Set next hop
         row.NextHop.Ipv4.sin_family = AF_INET;
         let gw_bytes = gateway.octets();
@@ -183,16 +182,13 @@ pub fn delete_route(
         row.NextHop.Ipv4.sin_addr.S_un.S_un_b.s_b2 = gw_bytes[1];
         row.NextHop.Ipv4.sin_addr.S_un.S_un_b.s_b3 = gw_bytes[2];
         row.NextHop.Ipv4.sin_addr.S_un.S_un_b.s_b4 = gw_bytes[3];
-        
+
         let status = DeleteIpForwardEntry2(&raw const row);
-        
+
         if status == ERROR_SUCCESS {
             info!(
                 "✅ Deleted route {}/{} via {} (IF: {})",
-                destination,
-                row.DestinationPrefix.PrefixLength,
-                gateway,
-                interface_index
+                destination, row.DestinationPrefix.PrefixLength, gateway, interface_index
             );
             Ok(())
         } else {
@@ -213,7 +209,7 @@ fn netmask_to_prefix_len(netmask: Ipv4Addr) -> u8 {
 #[cfg(target_os = "windows")]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_netmask_conversion() {
         assert_eq!(netmask_to_prefix_len(Ipv4Addr::new(255, 255, 255, 255)), 32);
