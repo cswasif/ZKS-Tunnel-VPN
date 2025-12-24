@@ -173,8 +173,8 @@ impl WasifVernam {
     }
 }
 
-/// Entropy Tax Payer: Contributes randomness to the Swarm
-/// NOTE: Currently disabled until /entropy endpoint is implemented
+/// Entropy Tax Payer: Verifies entropy endpoint health
+/// NOTE: With LavaRand-backed zks-key worker, no contribution needed
 #[allow(dead_code)]
 pub struct EntropyTaxPayer {
     vernam_url: String,
@@ -189,7 +189,7 @@ impl EntropyTaxPayer {
     /// Start the background contribution task
     pub fn start_background_task(self) {
         tokio::spawn(async move {
-            let mut interval = interval(Duration::from_secs(10)); // Pay tax every 10 seconds
+            let mut interval = interval(Duration::from_secs(60)); // Check every 60 seconds
 
             loop {
                 interval.tick().await;
@@ -200,41 +200,19 @@ impl EntropyTaxPayer {
         });
     }
 
-    /// Pay the Entropy Tax (Send 32 bytes of randomness)
+    /// Pay the Entropy Tax (verify endpoint health)
+    /// NOTE: With LavaRand-backed zks-key worker, no contribution needed
     async fn pay_tax(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // 1. Generate local entropy
-        let mut entropy = [0u8; 32];
-        getrandom::getrandom(&mut entropy)?;
-
-        // 2. Connect to zks-key worker via WebSocket
-        // Note: The worker expects a WebSocket connection for contributions
-        let ws_url = self
-            .vernam_url
-            .replace("https://", "wss://")
-            .replace("http://", "ws://");
-        let url = Url::parse(&format!("{}/entropy", ws_url))?;
-
-        let (ws_stream, _) = connect_async(url.to_string()).await?;
-        let (mut write, mut read) = ws_stream.split();
-
-        // 3. Send contribution
-        // Format: {"type": "contribute", "entropy": [bytes...]}
-        let request = serde_json::json!({
-            "type": "contribute",
-            "entropy": entropy
-        });
-
-        write.send(Message::Text(request.to_string())).await?;
-
-        // 4. Wait for ACK
-        if let Some(msg) = read.next().await {
-            if let Message::Text(text) = msg? {
-                debug!("Entropy Tax Paid: ACK received: {}", text);
-            }
+        // With LavaRand, we just verify the endpoint is healthy
+        let url = format!("{}/health", self.vernam_url.trim_end_matches('/'));
+        let response = reqwest::get(&url).await?;
+        
+        if response.status().is_success() {
+            debug!("Entropy endpoint healthy");
+            Ok(())
+        } else {
+            Err(format!("Entropy endpoint returned {}", response.status()).into())
         }
-
-        // Connection closes automatically when dropped
-        Ok(())
     }
 }
 
