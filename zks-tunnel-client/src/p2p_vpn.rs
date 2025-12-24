@@ -333,12 +333,25 @@ mod implementation {
             // Cleanup routes added by VPN
             #[cfg(target_os = "windows")]
             {
-                let exit_peer_ip = format!("{}", self.config.exit_peer_address);
                 info!("Removing VPN routes...");
+                
+                // Remove IPv4 split-tunnel routes
                 let _ = Command::new("route")
-                    .args(["delete", "0.0.0.0", "mask", "0.0.0.0", &exit_peer_ip])
+                    .args(["delete", "0.0.0.0", "mask", "128.0.0.0"])
                     .output();
-                info!("✅ VPN routes removed");
+                let _ = Command::new("route")
+                    .args(["delete", "128.0.0.0", "mask", "128.0.0.0"])
+                    .output();
+                info!("✅ IPv4 VPN routes removed");
+
+                // Remove IPv6 routes
+                let _ = Command::new("netsh")
+                    .args(["interface", "ipv6", "delete", "route", "::/1"])
+                    .output();
+                let _ = Command::new("netsh")
+                    .args(["interface", "ipv6", "delete", "route", "8000::/1"])
+                    .output();
+                info!("✅ IPv6 VPN routes removed");
             }
 
             #[cfg(target_os = "linux")]
@@ -612,7 +625,67 @@ mod implementation {
                             Err(e) => warn!("Route 128.0.0.0/1 error: {}", e),
                         }
 
-                        info!("✅ Split-tunnel routes configured - all traffic will go via VPN");
+                        info!("✅ IPv4 split-tunnel routes configured");
+
+                        // Set TUN interface metric to 1 (highest priority) - Mullvad pattern
+                        let metric_result = Command::new("netsh")
+                            .args([
+                                "interface",
+                                "ipv4",
+                                "set",
+                                "interface",
+                                &tun_if_index,
+                                "metric=1",
+                            ])
+                            .output();
+                        if let Ok(r) = metric_result {
+                            if r.status.success() {
+                                info!("✅ Set TUN interface metric to 1 (highest priority)");
+                            }
+                        }
+
+                        // IPv6 routes to prevent IPv6 leak (Mullvad pattern)
+                        // Route ::/1 covers first half of IPv6 address space
+                        let ipv6_route1 = Command::new("netsh")
+                            .args([
+                                "interface",
+                                "ipv6",
+                                "add",
+                                "route",
+                                "::/1",
+                                &format!("interface={}", tun_if_index),
+                                "metric=1",
+                            ])
+                            .output();
+                        if let Ok(r) = ipv6_route1 {
+                            if r.status.success() {
+                                info!("✅ Added IPv6 route ::/1 via TUN");
+                            } else {
+                                debug!("IPv6 route ::/1 skipped (may not have IPv6)");
+                            }
+                        }
+
+                        // Route 8000::/1 covers second half of IPv6 address space
+                        let ipv6_route2 = Command::new("netsh")
+                            .args([
+                                "interface",
+                                "ipv6",
+                                "add",
+                                "route",
+                                "8000::/1",
+                                &format!("interface={}", tun_if_index),
+                                "metric=1",
+                            ])
+                            .output();
+                        if let Ok(r) = ipv6_route2 {
+                            if r.status.success() {
+                                info!("✅ Added IPv6 route 8000::/1 via TUN");
+                            } else {
+                                debug!("IPv6 route 8000::/1 skipped (may not have IPv6)");
+                            }
+                        }
+
+                        info!("✅ All VPN routes configured - traffic will go via VPN");
                     }
                 }
 
