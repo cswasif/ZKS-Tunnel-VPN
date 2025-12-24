@@ -868,7 +868,10 @@ mod implementation {
                 info!("Setting up routes to capture traffic...");
                 // Route via Exit Peer's VPN IP using rtnetlink API
                 let gateway = self.config.exit_peer_address;
-                let interface_index = device.get_index() as u32;
+                
+                // Get interface index using if_nametoindex
+                let interface_name_cstr = std::ffi::CString::new(device.name()).unwrap();
+                let interface_index = unsafe { libc::if_nametoindex(interface_name_cstr.as_ptr()) };
 
                 // Add default route via netlink
                 match linux_routing::add_default_route(gateway, interface_index, 5).await {

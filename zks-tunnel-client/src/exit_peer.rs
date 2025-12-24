@@ -6,6 +6,9 @@
 //! Usage:
 //!   zks-vpn --mode exit-peer --room <room_id>
 
+#[cfg(feature = "vpn")]
+use crate::userspace_nat::{UserspaceNat, UserspaceNatReader, UserspaceNatWriter};
+
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -601,7 +604,6 @@ pub async fn run_exit_peer_vpn(
     vernam_url: &str,
     room_id: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use crate::userspace_nat::{UserspaceNat, UserspaceNatReader, UserspaceNatWriter};
     use std::sync::atomic::{AtomicBool, Ordering};
 
     info!("╔══════════════════════════════════════════════════════════════╗");

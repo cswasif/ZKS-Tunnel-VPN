@@ -249,35 +249,41 @@ pub struct P2PRelay {
 async fn discover_peers_from_relay<S>(
     reader: &mut SplitStream<WebSocketStream<S>>,
     timeout_duration: Duration,
-) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>>
+) -> Result<(Vec<String>, Vec<Message>), Box<dyn std::error::Error + Send + Sync>>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     use tokio::time::timeout;
 
     let mut peer_ids = Vec::new();
+    let mut unhandled_messages = Vec::new();
 
     // Listen for messages for the specified duration
     let discovery_result = timeout(timeout_duration, async {
         while let Some(msg) = reader.next().await {
-            match msg? {
-                Message::Text(text) => {
+            let msg = msg?;
+            match msg {
+                Message::Text(ref text) => {
                     // Try to parse as JSON to extract peer information
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                    let mut handled = false;
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(text) {
                         // Check for welcome message
                         if json["type"] == "welcome" {
                             debug!("Received welcome message: {}", text);
-                            // Welcome doesn't contain peer list in current implementation
-                            continue;
+                            handled = true;
                         }
-
                         // Check for peer_join message
-                        if json["type"] == "peer_join" {
+                        else if json["type"] == "peer_join" {
                             if let Some(peer_id) = json["peer_id"].as_str() {
                                 info!("Discovered peer: {}", peer_id);
                                 peer_ids.push(peer_id.to_string());
+                                handled = true;
                             }
                         }
+                    }
+
+                    if !handled {
+                        unhandled_messages.push(msg);
                     }
                 }
                 Message::Close(_) => {
@@ -285,7 +291,9 @@ where
                         "Connection closed during peer discovery".into(),
                     );
                 }
-                _ => {}
+                _ => {
+                    unhandled_messages.push(msg);
+                }
             }
         }
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
@@ -296,7 +304,7 @@ where
     match discovery_result {
         Ok(_) | Err(_) => {
             info!("Peer discovery complete: found {} peers", peer_ids.len());
-            Ok(peer_ids)
+            Ok((peer_ids, unhandled_messages))
         }
     }
 }
@@ -620,7 +628,7 @@ impl P2PRelay {
         info!("🎲 Discovering peers for Swarm Entropy collection...");
 
         // Discover peers from relay messages (welcome + peer_join events)
-        let peer_ids =
+        let (peer_ids, unhandled_msgs) =
             discover_peers_from_relay(&mut *reader.lock().await, Duration::from_secs(2)).await?;
 
         let remote_key = if !peer_ids.is_empty() {
@@ -686,34 +694,61 @@ impl P2PRelay {
                 PeerRole::ExitPeer => {
                     // Exit Peer: Wait for SharedEntropy from Client
                     info!("⏳ Waiting for Swarm Entropy from Client...");
-                    let reader_clone = reader.clone();
-                    let entropy_timeout = tokio::time::timeout(Duration::from_secs(10), async move {
-                        while let Some(msg) = reader_clone.lock().await.next().await {
-                            if let Message::Text(text) = msg? {
-                                if let Some(ke_msg) = KeyExchangeMessage::from_json(&text) {
-                                    if let Some(entropy_bytes) = ke_msg.parse_shared_entropy() {
-                                        return Ok::<_, Box<dyn std::error::Error + Send + Sync>>(
-                                            entropy_bytes,
-                                        );
-                                    }
+
+                    // Check unhandled messages first
+                    let mut entropy_found = None;
+                    for msg in unhandled_msgs {
+                        if let Message::Text(text) = msg {
+                            if let Some(ke_msg) = KeyExchangeMessage::from_json(&text) {
+                                if let Some(entropy_bytes) = ke_msg.parse_shared_entropy() {
+                                    entropy_found = Some(entropy_bytes);
+                                    break;
                                 }
-                                // Ignore other messages (acks, etc.)
                             }
                         }
-                        Err("No entropy received".into())
-                    })
-                    .await;
+                    }
 
-                    match entropy_timeout {
-                        Ok(Ok(entropy_bytes)) => {
-                            keys.set_remote_key(entropy_bytes);
-                            info!("✅ Received Swarm Entropy from Client (Double-Key active)");
-                        }
-                        Ok(Err(e)) => {
-                            warn!("Failed to receive entropy: {}. Using ChaCha20 only.", e);
-                        }
-                        Err(_) => {
-                            warn!("Entropy timeout. Client may not support Double-Key. Using ChaCha20 only.");
+                    if let Some(entropy_bytes) = entropy_found {
+                        keys.set_remote_key(entropy_bytes);
+                        info!(
+                            "✅ Received Swarm Entropy from Client (Double-Key active) [Buffered]"
+                        );
+                    } else {
+                        let reader_clone = reader.clone();
+                        let entropy_timeout =
+                            tokio::time::timeout(Duration::from_secs(10), async move {
+                                while let Some(msg) = reader_clone.lock().await.next().await {
+                                    if let Message::Text(text) = msg? {
+                                        if let Some(ke_msg) = KeyExchangeMessage::from_json(&text) {
+                                            if let Some(entropy_bytes) =
+                                                ke_msg.parse_shared_entropy()
+                                            {
+                                                return Ok::<
+                                                    _,
+                                                    Box<dyn std::error::Error + Send + Sync>,
+                                                >(
+                                                    entropy_bytes
+                                                );
+                                            }
+                                        }
+                                        // Ignore other messages (acks, etc.)
+                                    }
+                                }
+                                Err("No entropy received".into())
+                            })
+                            .await;
+
+                        match entropy_timeout {
+                            Ok(Ok(entropy_bytes)) => {
+                                keys.set_remote_key(entropy_bytes);
+                                info!("✅ Received Swarm Entropy from Client (Double-Key active)");
+                            }
+                            Ok(Err(e)) => {
+                                warn!("Failed to receive entropy: {}. Using ChaCha20 only.", e);
+                            }
+                            Err(_) => {
+                                warn!("Entropy timeout. Client may not support Double-Key. Using ChaCha20 only.");
+                            }
                         }
                     }
                 }

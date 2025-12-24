@@ -6,10 +6,14 @@
 #[cfg(target_os = "linux")]
 use std::net::Ipv4Addr;
 #[cfg(target_os = "linux")]
-use tracing::{debug, info};
+use tracing::info;
 
 #[cfg(target_os = "linux")]
-use rtnetlink::Handle;
+use rtnetlink::{new_connection, IpVersion};
+#[cfg(target_os = "linux")]
+use netlink_packet_route::route::{RouteMessage, RouteScope, RouteProtocol, RouteType};
+#[cfg(target_os = "linux")]
+use netlink_packet_route::AddressFamily;
 
 #[cfg(target_os = "linux")]
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -17,20 +21,35 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + S
 /// Add a default route via netlink (0.0.0.0/0)
 #[cfg(target_os = "linux")]
 pub async fn add_default_route(gateway: Ipv4Addr, interface_index: u32, metric: u32) -> Result<()> {
-    let (connection, handle, _) = rtnetlink::new_connection()?;
+    let (connection, handle, _) = new_connection()?;
     tokio::spawn(connection);
 
-    // Add default route (0.0.0.0/0) - rtnetlink 0.15.0 API
-    handle
-        .route()
-        .add()
-        .v4()
-        .destination_prefix(Ipv4Addr::new(0, 0, 0, 0), 0)
-        .gateway(gateway)
-        .output_interface(interface_index)
-        .priority(metric)
-        .execute()
-        .await?;
+    // Build route message for rtnetlink 0.15.0
+    let mut route = RouteMessage::default();
+    route.header.address_family = AddressFamily::Inet;
+    route.header.destination_prefix_length = 0; // 0.0.0.0/0
+    route.header.table = 254; // RT_TABLE_MAIN
+    route.header.protocol = RouteProtocol::Boot;
+    route.header.scope = RouteScope::Universe;
+    route.header.kind = RouteType::Unicast;
+    
+    // Add destination (0.0.0.0/0)
+    route.attributes.push(netlink_packet_route::route::RouteAttribute::Destination(
+        vec![0, 0, 0, 0]
+    ));
+    
+    // Add gateway
+    route.attributes.push(netlink_packet_route::route::RouteAttribute::Gateway(
+        gateway.octets().to_vec()
+    ));
+    
+    // Add output interface
+    route.attributes.push(netlink_packet_route::route::RouteAttribute::Oif(interface_index));
+    
+    // Add metric/priority
+    route.attributes.push(netlink_packet_route::route::RouteAttribute::Priority(metric));
+
+    handle.route().add(route).execute().await?;
 
     info!(
         "✅ Added default route via {} (IF: {}, metric: {})",
@@ -39,110 +58,33 @@ pub async fn add_default_route(gateway: Ipv4Addr, interface_index: u32, metric: 
     Ok(())
 }
 
-/// Add a specific route via netlink
-#[cfg(target_os = "linux")]
-pub async fn add_route(
-    destination: Ipv4Addr,
-    prefix_len: u8,
-    gateway: Ipv4Addr,
-    interface_index: u32,
-    metric: u32,
-) -> Result<()> {
-    let (connection, handle, _) = rtnetlink::new_connection()?;
-    tokio::spawn(connection);
-
-    // Add route using rtnetlink 0.15.0 API
-    handle
-        .route()
-        .add()
-        .v4()
-        .destination_prefix(destination, prefix_len)
-        .gateway(gateway)
-        .output_interface(interface_index)
-        .priority(metric)
-        .execute()
-        .await?;
-
-    info!(
-        "✅ Added route {}/{} via {} (IF: {}, metric: {})",
-        destination, prefix_len, gateway, interface_index, metric
-    );
-    Ok(())
-}
-
 /// Delete a default route via netlink
 #[cfg(target_os = "linux")]
 pub async fn delete_default_route(gateway: Ipv4Addr) -> Result<()> {
-    let (connection, handle, _) = rtnetlink::new_connection()?;
+    let (connection, handle, _) = new_connection()?;
     tokio::spawn(connection);
 
-    // Delete default route (0.0.0.0/0) using rtnetlink 0.15.0 API
-    handle
-        .route()
-        .del()
-        .v4()
-        .destination_prefix(Ipv4Addr::new(0, 0, 0, 0), 0)
-        .gateway(gateway)
-        .execute()
-        .await?;
+    // Build route message for deletion
+    let mut route = RouteMessage::default();
+    route.header.address_family = AddressFamily::Inet;
+    route.header.destination_prefix_length = 0; // 0.0.0.0/0
+    route.header.table = 254; // RT_TABLE_MAIN
+    route.header.protocol = RouteProtocol::Boot;
+    route.header.scope = RouteScope::Universe;
+    route.header.kind = RouteType::Unicast;
+    
+    // Add destination (0.0.0.0/0)
+    route.attributes.push(netlink_packet_route::route::RouteAttribute::Destination(
+        vec![0, 0, 0, 0]
+    ));
+    
+    // Add gateway
+    route.attributes.push(netlink_packet_route::route::RouteAttribute::Gateway(
+        gateway.octets().to_vec()
+    ));
+
+    handle.route().del(route).execute().await?;
 
     info!("✅ Deleted default route via {}", gateway);
     Ok(())
-}
-
-/// Delete a specific route via netlink
-#[cfg(target_os = "linux")]
-pub async fn delete_route(destination: Ipv4Addr, prefix_len: u8, gateway: Ipv4Addr) -> Result<()> {
-    let (connection, handle, _) = rtnetlink::new_connection()?;
-    tokio::spawn(connection);
-
-    // Delete route using rtnetlink 0.15.0 API
-    handle
-        .route()
-        .del()
-        .v4()
-        .destination_prefix(destination, prefix_len)
-        .gateway(gateway)
-        .execute()
-        .await?;
-
-    info!(
-        "✅ Deleted route {}/{} via {}",
-        destination, prefix_len, gateway
-    );
-    Ok(())
-}
-
-/// Helper function to get route handle for advanced operations
-#[cfg(target_os = "linux")]
-#[allow(dead_code)]
-pub async fn get_handle() -> Result<Handle> {
-    let (connection, handle, _) = rtnetlink::new_connection()?;
-    tokio::spawn(connection);
-    Ok(handle)
-}
-
-#[cfg(test)]
-#[cfg(target_os = "linux")]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    #[ignore] // Requires root privileges
-    async fn test_add_delete_route() {
-        let dest = Ipv4Addr::new(10, 0, 0, 0);
-        let gateway = Ipv4Addr::new(192, 168, 1, 1);
-        let interface_index = 1; // lo interface
-        let metric = 100;
-
-        // Add route
-        add_route(dest, 8, gateway, interface_index, metric)
-            .await
-            .expect("Failed to add route");
-
-        // Delete route
-        delete_route(dest, 8, gateway)
-            .await
-            .expect("Failed to delete route");
-    }
 }

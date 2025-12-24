@@ -35,12 +35,12 @@ impl DnsGuard {
         Ok(Self {
             #[cfg(target_os = "windows")]
             inner: windows::WindowsDnsGuard::new()
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?,
-
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?,
+            
             #[cfg(target_os = "linux")]
             inner: linux::LinuxDnsGuard::new()
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?,
-
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?,
+            
             original_dns: Vec::new(),
             enabled: false,
         })
@@ -64,13 +64,13 @@ impl DnsGuard {
         self.inner
             .set_dns(interface_name, dns_servers.clone())
             .await
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
 
         #[cfg(target_os = "linux")]
         self.inner
             .set_dns(interface_name, dns_servers.clone())
             .await
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
 
         self.original_dns = dns_servers;
         self.enabled = true;
@@ -91,13 +91,13 @@ impl DnsGuard {
         self.inner
             .reset_dns()
             .await
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
 
         #[cfg(target_os = "linux")]
         self.inner
             .reset_dns()
             .await
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
 
         self.enabled = false;
 
