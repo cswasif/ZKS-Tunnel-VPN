@@ -39,9 +39,9 @@ mod implementation {
     use zks_tunnel_proto::{StreamId, TunnelMessage};
 
     #[cfg(target_os = "linux")]
-    use tokio::io::unix::AsyncFd;
-    #[cfg(target_os = "linux")]
     use crate::tun_multiqueue::TunQueue;
+    #[cfg(target_os = "linux")]
+    use tokio::io::unix::AsyncFd;
 
     /// Abstract writer for TUN device (Single or Multi-Queue)
     #[derive(Clone)]
