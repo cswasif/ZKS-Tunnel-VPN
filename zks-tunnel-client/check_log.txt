@@ -1,0 +1,23 @@
+﻿cargo : warning: profiles for the non root package will be ignored, specify 
+profiles at the workspace root:
+At line:1 char:1
++ cargo check --features vpn 2>&1 | Out-File -Encoding utf8 check_log.t ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (warning: profil...workspace root::St 
+   ring) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+package:   D:\BuzzU\ZKS_VPN\zks-tunnel-relay\Cargo.toml
+workspace: D:\BuzzU\ZKS_VPN\Cargo.toml
+    Checking zks-tunnel-client v0.1.0 (D:\BuzzU\ZKS_VPN\zks-tunnel-client)
+warning: constant `SERVICE_DESCRIPTION` is never used
+  --> zks-tunnel-client\src\windows_service.rs:24:11
+   |
+24 |     const SERVICE_DESCRIPTION: &str = "System-wide VPN service for ZKS 
+Protocol";
+   |           ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `zks-tunnel-client` (bin "zks-vpn") generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.71s

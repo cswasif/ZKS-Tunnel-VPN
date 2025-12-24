@@ -55,6 +55,9 @@ mod dns_guard;
 #[cfg(feature = "vpn")]
 mod kill_switch;
 
+#[cfg(windows)]
+mod windows_service;
+
 #[cfg(feature = "swarm")]
 mod p2p_swarm;
 
@@ -126,12 +129,12 @@ pub enum Mode {
 }
 
 /// ZKS-Tunnel VPN Client
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(name = "zks-vpn")]
 #[command(author = "Md Wasif Faisal")]
 #[command(version = "0.1.0")]
 #[command(about = "Serverless VPN via Cloudflare Workers", long_about = None)]
-struct Args {
+pub struct Args {
     /// ZKS-Tunnel Worker WebSocket URL
     #[arg(short, long, default_value = "wss://zks-tunnel.workers.dev/tunnel")]
     worker: String,
@@ -214,6 +217,18 @@ struct Args {
     /// Transfer ticket (receive-file mode)
     #[arg(long)]
     ticket: Option<String>,
+
+    /// Run as a Windows Service
+    #[arg(long)]
+    service: bool,
+
+    /// Install as a Windows Service
+    #[arg(long)]
+    install_service: bool,
+
+    /// Uninstall the Windows Service
+    #[arg(long)]
+    uninstall_service: bool,
 }
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -221,6 +236,19 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
     let args = Args::parse();
+
+    #[cfg(windows)]
+    {
+        if args.install_service {
+            return windows_service::service::install_service();
+        }
+        if args.uninstall_service {
+            return windows_service::service::uninstall_service();
+        }
+        if args.service {
+            return windows_service::service::run().map_err(|e| e.into());
+        }
+    }
 
     // Initialize logging
     let level = if args.verbose {
@@ -572,8 +600,54 @@ async fn run_vpn_mode(_args: Args, _tunnel: TunnelClient) -> Result<(), BoxError
     }
 }
 
+/// Start P2P VPN controller
+#[cfg(feature = "vpn")]
+pub async fn start_p2p_vpn(
+    args: Args,
+    room_id: String,
+) -> Result<p2p_vpn::P2PVpnController, BoxError> {
+    use p2p_vpn::{P2PVpnConfig, P2PVpnController};
+
+    // Check for admin/root privileges
+    check_privileges()?;
+
+    let vpn_addr: std::net::Ipv4Addr = args.vpn_address.parse()?;
+
+    let config = P2PVpnConfig {
+        device_name: args.tun_name.clone(),
+        address: vpn_addr,
+        netmask: std::net::Ipv4Addr::new(255, 255, 255, 0),
+        mtu: 1500,
+        dns_protection: args.dns_protection,
+        kill_switch: args.kill_switch,
+        relay_url: args.relay.clone(),
+        vernam_url: args.vernam.clone(),
+        room_id,
+        proxy: args.proxy.clone(),
+
+        exit_peer_address: args.exit_peer_address.parse()?,
+    };
+
+    info!("🔒 Starting P2P VPN (Triple-Blind Architecture)...");
+    info!("   All traffic will be routed through the Exit Peer.");
+    info!("   Your IP is hidden behind the Exit Peer's IP.");
+
+    if args.kill_switch {
+        info!("   Kill switch: ENABLED (traffic blocked if VPN drops)");
+    }
+
+    if args.dns_protection {
+        info!("   DNS protection: ENABLED (queries via DoH)");
+    }
+
+    let vpn = P2PVpnController::new(config);
+    vpn.start().await?;
+
+    Ok(vpn)
+}
+
 /// Run in P2P VPN mode (Triple-Blind Architecture)
-async fn run_p2p_vpn_mode(_args: Args, _room_id: String) -> Result<(), BoxError> {
+async fn run_p2p_vpn_mode(args: Args, room_id: String) -> Result<(), BoxError> {
     #[cfg(not(feature = "vpn"))]
     {
         error!("❌ VPN mode is not enabled!");
@@ -583,47 +657,7 @@ async fn run_p2p_vpn_mode(_args: Args, _room_id: String) -> Result<(), BoxError>
 
     #[cfg(feature = "vpn")]
     {
-        use p2p_vpn::{P2PVpnConfig, P2PVpnController};
-
-        // Shadow the underscore-prefixed args for use
-        let args = _args;
-        let room_id = _room_id;
-
-        // Check for admin/root privileges
-        check_privileges()?;
-
-        let vpn_addr: std::net::Ipv4Addr = args.vpn_address.parse()?;
-
-        let config = P2PVpnConfig {
-            device_name: args.tun_name.clone(),
-            address: vpn_addr,
-            netmask: std::net::Ipv4Addr::new(255, 255, 255, 0),
-            mtu: 1500,
-            dns_protection: args.dns_protection,
-            kill_switch: args.kill_switch,
-            relay_url: args.relay.clone(),
-            vernam_url: args.vernam.clone(),
-            room_id,
-            proxy: args.proxy.clone(),
-
-            exit_peer_address: args.exit_peer_address.parse()?,
-        };
-
-        info!("🔒 Starting P2P VPN (Triple-Blind Architecture)...");
-        info!("   All traffic will be routed through the Exit Peer.");
-        info!("   Your IP is hidden behind the Exit Peer's IP.");
-
-        if args.kill_switch {
-            info!("   Kill switch: ENABLED (traffic blocked if VPN drops)");
-        }
-
-        if args.dns_protection {
-            info!("   DNS protection: ENABLED (queries via DoH)");
-        }
-
-        let vpn = P2PVpnController::new(config);
-
-        vpn.start().await?;
+        let vpn = start_p2p_vpn(args, room_id).await?;
 
         // Wait for Ctrl+C
         info!("");

@@ -21,6 +21,9 @@ use crate::entropy_tax::{EntropyState, EntropyTax};
 use crate::p2p_relay::{P2PRelay, PeerRole};
 use std::collections::HashSet;
 
+#[cfg(feature = "vpn")]
+use crate::userspace_nat::{UserspaceNat, UserspaceNatReader, UserspaceNatWriter};
+
 /// Active TCP connection managed by Exit Peer
 #[cfg(feature = "socks5")]
 #[allow(dead_code)]

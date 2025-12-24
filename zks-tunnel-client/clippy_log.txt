@@ -1,0 +1,13 @@
+﻿cargo : warning: profiles for the non root package will be ignored, specify 
+profiles at the workspace root:
+At line:1 char:1
++ cargo clippy --features vpn -- -D warnings 2>&1 | Out-File -Encoding  ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (warning: profil...workspace root::St 
+   ring) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+package:   D:\BuzzU\ZKS_VPN\zks-tunnel-relay\Cargo.toml
+workspace: D:\BuzzU\ZKS_VPN\Cargo.toml
+    Checking zks-tunnel-client v0.1.0 (D:\BuzzU\ZKS_VPN\zks-tunnel-client)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.54s
