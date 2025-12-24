@@ -38,6 +38,7 @@ mod implementation {
     use reqwest::Client;
     use zks_tunnel_proto::{StreamId, TunnelMessage};
     use crate::dns_guard::DnsGuard;
+    use crate::kill_switch::KillSwitch;
 
     #[cfg(target_os = "linux")]
     use crate::tun_multiqueue::TunQueue;
@@ -188,8 +189,7 @@ mod implementation {
         dns_pending: Arc<RwLock<HashMap<u32, SocketAddr>>>,
         #[allow(clippy::type_complexity)]
         dns_response_tx: Arc<RwLock<Option<mpsc::Sender<(Vec<u8>, SocketAddr)>>>>,
-        #[cfg(target_os = "windows")]
-        original_fw_policy: Arc<Mutex<Option<String>>>,
+        kill_switch: Arc<Mutex<KillSwitch>>,
         dns_guard: Arc<Mutex<Option<DnsGuard>>>,
     }
 
@@ -210,8 +210,7 @@ mod implementation {
                 streams: Arc::new(RwLock::new(HashMap::new())),
                 dns_pending: Arc::new(RwLock::new(HashMap::new())),
                 dns_response_tx: Arc::new(RwLock::new(None)),
-                #[cfg(target_os = "windows")]
-                original_fw_policy: Arc::new(Mutex::new(None)),
+                kill_switch: Arc::new(Mutex::new(KillSwitch::new())),
                 dns_guard: Arc::new(Mutex::new(None)),
             }
         }
@@ -267,8 +266,32 @@ mod implementation {
 
             // Enable kill switch if configured
             if self.config.kill_switch {
-                if let Err(e) = self.enable_kill_switch().await {
+                info!("🔒 Enabling Kill Switch...");
+                
+                // Helper to resolve URL
+                async fn resolve_url(url_str: &str) -> Option<std::net::IpAddr> {
+                     if let Ok(url) = url::Url::parse(url_str) {
+                         if let Some(host) = url.host_str() {
+                             if let Ok(mut addrs) = tokio::net::lookup_host(format!("{}:443", host)).await {
+                                 return addrs.next().map(|socket| socket.ip());
+                             }
+                         }
+                     }
+                     None
+                }
+
+                let mut allowed_ips = Vec::new();
+                if let Some(ip) = resolve_url(&self.config.relay_url).await {
+                    allowed_ips.push(ip);
+                }
+                if let Some(ip) = resolve_url(&self.config.vernam_url).await {
+                    allowed_ips.push(ip);
+                }
+
+                if let Err(e) = self.kill_switch.lock().await.enable(allowed_ips).await {
                     error!("Failed to enable kill switch: {}", e);
+                } else {
+                    info!("✅ Kill Switch enabled");
                 }
             }
             // Create TUN device and start packet processing
@@ -464,7 +487,7 @@ mod implementation {
 
             // Disable kill switch
             if self.config.kill_switch {
-                if let Err(e) = self.disable_kill_switch().await {
+                if let Err(e) = self.kill_switch.lock().await.disable().await {
                     error!("Failed to disable kill switch: {}", e);
                 }
             }
@@ -1404,116 +1427,6 @@ mod implementation {
             Ok(())
         }
 
-        /// Enable kill switch (Windows)
-        async fn enable_kill_switch(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-            #[cfg(target_os = "windows")]
-            {
-                use std::env;
-
-                // Save current policy
-                let show = Command::new("netsh")
-                    .args(["advfirewall", "show", "currentprofile"])
-                    .output()?;
-                if show.status.success() {
-                    let text = String::from_utf8_lossy(&show.stdout).to_string();
-                    let mut guard = self.original_fw_policy.lock().await;
-                    *guard = Some(text);
-                }
-
-                // Block all outbound by default
-                let _ = Command::new("netsh")
-                    .args([
-                        "advfirewall",
-                        "set",
-                        "currentprofile",
-                        "firewallpolicy",
-                        "blockinbound,blockoutbound",
-                    ])
-                    .output()?;
-
-                // Allow this executable
-                if let Ok(exe) = env::current_exe() {
-                    let _ = Command::new("netsh")
-                        .args([
-                            "advfirewall",
-                            "firewall",
-                            "add",
-                            "rule",
-                            "name=ZKS-VPN",
-                            "dir=out",
-                            "action=allow",
-                            &format!("program={}", exe.display()),
-                        ])
-                        .output()?;
-                }
-
-                // Allow localhost
-                let _ = Command::new("netsh")
-                    .args([
-                        "advfirewall",
-                        "firewall",
-                        "add",
-                        "rule",
-                        "name=ZKS-Localhost",
-                        "dir=out",
-                        "action=allow",
-                        "remoteip=127.0.0.0/8",
-                    ])
-                    .output()?;
-
-                info!("Kill switch enabled - all non-VPN traffic blocked");
-            }
-
-            #[cfg(not(target_os = "windows"))]
-            {
-                info!("Kill switch not implemented for this platform");
-            }
-
-            Ok(())
-        }
-
-        /// Disable kill switch
-        async fn disable_kill_switch(
-            &self,
-        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-            #[cfg(target_os = "windows")]
-            {
-                // Delete our rules
-                let _ = Command::new("netsh")
-                    .args(["advfirewall", "firewall", "delete", "rule", "name=ZKS-VPN"])
-                    .output()?;
-
-                let _ = Command::new("netsh")
-                    .args([
-                        "advfirewall",
-                        "firewall",
-                        "delete",
-                        "rule",
-                        "name=ZKS-Localhost",
-                    ])
-                    .output()?;
-
-                // Restore default policy
-                let _ = Command::new("netsh")
-                    .args([
-                        "advfirewall",
-                        "set",
-                        "currentprofile",
-                        "firewallpolicy",
-                        "blockinbound,allowoutbound",
-                    ])
-                    .output()?;
-
-                info!("Kill switch disabled - normal traffic restored");
-            }
-
-            #[cfg(not(target_os = "windows"))]
-            {
-                info!("Kill switch not implemented for this platform");
-            }
-
-            Ok(())
-        }
 
         /// Get current VPN state
         #[allow(dead_code)]

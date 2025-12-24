@@ -145,7 +145,7 @@ impl UserspaceNat {
 
                     if let Some(tx) = sender {
                         // Send to existing flow
-                        if let Err(_) = tx.send((payload, target)).await {
+                        if tx.send((payload, target)).await.is_err() {
                             // Channel closed, ignore
                         }
                     } else {

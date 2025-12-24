@@ -52,6 +52,8 @@ mod windows_routing;
 // DNS leak protection
 #[cfg(feature = "vpn")]
 mod dns_guard;
+#[cfg(feature = "vpn")]
+mod kill_switch;
 
 #[cfg(feature = "swarm")]
 mod p2p_swarm;

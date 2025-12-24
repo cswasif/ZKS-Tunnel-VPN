@@ -578,16 +578,6 @@ async fn handle_dns_query(relay: Arc<P2PRelay>, request_id: u32, query: Bytes) {
     }
 }
 
-/// Run as Exit Peer in VPN mode (with TUN device for full IP packet forwarding)
-///
-/// This mode creates a TUN device on the Exit Peer to forward raw IP packets
-/// from the Client to the Internet and back.
-///
-/// Prerequisites on the Exit Peer server:
-/// - Linux with TUN support
-/// - Root privileges
-/// - Enable IP forwarding: sysctl -w net.ipv4.ip_forward=1
-/// - Setup NAT: iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
 #[cfg(feature = "vpn")]
 /// Run as Exit Peer in VPN mode (with TUN device for full IP packet forwarding)
 ///
