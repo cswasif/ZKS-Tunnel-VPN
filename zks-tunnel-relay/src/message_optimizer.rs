@@ -18,8 +18,10 @@ pub enum MessagePriority {
 impl MessagePriority {
     /// Determine priority from message content
     pub fn from_message(msg: &str) -> Self {
-        // Check message type
+        // Check message type - support both snake_case and PascalCase
         if msg.contains("\"type\":\"auth\"")
+            || msg.contains("\"type\":\"auth_init\"")
+            || msg.contains("\"type\":\"auth_response\"")
             || msg.contains("\"type\":\"key_exchange\"")
             || msg.contains("KeyExchange")
             || msg.contains("AuthInit")
@@ -27,6 +29,8 @@ impl MessagePriority {
         {
             MessagePriority::Critical
         } else if msg.contains("\"type\":\"entropy\"")
+            || msg.contains("\"type\":\"entropy_commit\"")
+            || msg.contains("\"type\":\"entropy_reveal\"")
             || msg.contains("\"type\":\"peer_join\"")
             || msg.contains("\"type\":\"peer_leave\"")
             || msg.contains("PeerJoined")
