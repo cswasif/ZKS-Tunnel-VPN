@@ -200,6 +200,11 @@ impl MultiQueueTun {
         }
         Ok(())
     }
+
+    /// Consume the device and return the underlying queues
+    pub fn into_queues(self) -> Vec<TunQueue> {
+        self.queues
+    }
 }
 
 // Stub for non-Linux platforms

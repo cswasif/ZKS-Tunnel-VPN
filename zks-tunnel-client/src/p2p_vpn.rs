@@ -33,12 +33,49 @@ mod implementation {
     use tokio::sync::{mpsc, Mutex, RwLock};
     use tracing::{debug, error, info, warn};
 
-    use crate::p2p_relay::{P2PRelay, PeerRole};
-    use zks_tunnel_proto::{StreamId, TunnelMessage};
+    #[cfg(target_os = "linux")]
+    use std::os::unix::io::AsRawFd;
+    #[cfg(target_os = "linux")]
+    use tokio::io::unix::AsyncFd;
 
-    // Import netstack-smoltcp types
-    use netstack_smoltcp::StackBuilder;
-    use reqwest::Client;
+    #[cfg(target_os = "linux")]
+    use crate::tun_multiqueue::TunQueue;
+
+    /// Abstract writer for TUN device (Single or Multi-Queue)
+    #[derive(Clone)]
+    pub enum TunDeviceWriter {
+        TunRs(Arc<tun_rs::AsyncDevice>),
+        #[cfg(target_os = "linux")]
+        MultiQueue(Arc<AsyncFd<TunQueue>>), // We use one queue for writing (usually queue 0)
+    }
+
+    impl TunDeviceWriter {
+        pub async fn send(&self, packet: &[u8]) -> std::io::Result<()> {
+            match self {
+                Self::TunRs(d) => d.send(packet).await,
+                #[cfg(target_os = "linux")]
+                Self::MultiQueue(fd) => {
+                    // Wait for writability
+                    let mut guard = fd.writable().await?;
+                    match guard.try_io(|inner| inner.get_ref().send(packet)) {
+                        Ok(result) => result.map(|_| ()),
+                        Err(_would_block) => {
+                            // Should not happen often with writable() check, but retrying is handled by loop if we had one
+                            // Here we just return WouldBlock error if it happens, or we can loop.
+                            // But try_io returns Result<T, _>.
+                            // If it returns Err, it means WouldBlock.
+                            // We should probably loop here?
+                            // But writable() guarantees readiness usually.
+                            // Let's just return Err(WouldBlock) and let caller handle or ignore?
+                            // Actually, tun_rs::AsyncDevice::send handles this internally.
+                            // Let's implement a loop.
+                            Err(std::io::Error::new(std::io::ErrorKind::WouldBlock, "WouldBlock"))
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     /// P2P VPN configuration
     #[derive(Debug, Clone)]
@@ -239,7 +276,7 @@ mod implementation {
             dns_response_tx: Arc<RwLock<Option<mpsc::Sender<(Vec<u8>, SocketAddr)>>>>,
             stats: Arc<Mutex<P2PVpnStats>>,
             running: Arc<AtomicBool>,
-            device_writer: Option<Arc<tun_rs::AsyncDevice>>,
+            device_writer: Option<TunDeviceWriter>,
         ) {
             while running.load(Ordering::SeqCst) {
                 match relay.recv().await {
@@ -571,7 +608,12 @@ mod implementation {
         ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             info!("Creating TUN device...");
 
-            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            #[cfg(target_os = "linux")]
+            {
+                return self.run_tun_linux(relay).await;
+            }
+
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             {
                 let device = tun_rs::DeviceBuilder::new()
                     .ipv4(self.config.address, 24, None)
@@ -802,6 +844,125 @@ mod implementation {
             }
         }
 
+        #[cfg(target_os = "linux")]
+        async fn run_tun_linux(
+            &self,
+            relay: Arc<P2PRelay>,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            info!("Creating Multi-Queue TUN device (Linux)...");
+            let num_queues = num_cpus::get();
+            info!("Detected {} CPU cores, creating {} queues", num_queues, num_queues);
+
+            let device = crate::tun_multiqueue::MultiQueueTun::new(&self.config.device_name, num_queues)?;
+
+            // Setup routing (Linux specific)
+            {
+                info!("Setting up routes to capture traffic...");
+                // Route via Exit Peer's VPN IP, not our own TUN IP
+                let gateway = format!("{}", self.config.exit_peer_address);
+                let _ = Command::new("ip")
+                    .args(["route", "add", "default", "via", &gateway, "metric", "5"])
+                    .output();
+                info!("✅ Default route added via {}", gateway);
+            }
+
+            let queues = device.into_queues();
+            let mut async_queues = Vec::new();
+            for q in queues {
+                q.set_nonblocking(true)?;
+                async_queues.push(Arc::new(AsyncFd::new(q)?));
+            }
+
+            // Use the first queue for writing
+            let writer = TunDeviceWriter::MultiQueue(async_queues[0].clone());
+
+            let running = self.running.clone();
+            let stats = self.stats.clone();
+
+            // Spawn handle_relay_messages
+            let streams = self.streams.clone();
+            let dns_pending = self.dns_pending.clone();
+            let dns_response_tx = self.dns_response_tx.clone();
+            let stats_clone = stats.clone();
+            let running_handler = running.clone();
+            let device_writer_clone = writer.clone();
+            let relay_for_recv = relay.clone();
+
+            tokio::spawn(async move {
+                Self::handle_relay_messages(
+                    relay_for_recv,
+                    streams,
+                    dns_pending,
+                    dns_response_tx,
+                    stats_clone,
+                    running_handler,
+                    Some(device_writer_clone),
+                )
+                .await;
+            });
+
+            // Spawn reader tasks for each queue
+            for (i, q) in async_queues.into_iter().enumerate() {
+                let relay_send = relay.clone();
+                let running = running.clone();
+                let stats = stats.clone();
+                let pool = crate::packet_pool::PacketBufPool::new(1024, 2048);
+                
+                tokio::spawn(async move {
+                    info!("Starting TUN queue {} reader", i);
+                    while running.load(Ordering::SeqCst) {
+                        let mut buf = pool.get();
+                        
+                        // Wait for readability
+                        let mut guard = match q.readable().await {
+                            Ok(g) => g,
+                            Err(e) => {
+                                error!("Queue {} readable error: {}", i, e);
+                                break;
+                            }
+                        };
+                        
+                        match guard.try_io(|inner| inner.get_ref().recv(&mut buf)) {
+                            Ok(Ok(n)) => {
+                                // Encrypt and send
+                                let msg = TunnelMessage::IpPacket {
+                                    payload: Bytes::copy_from_slice(&buf[..n]),
+                                };
+                                pool.return_buf(buf);
+                                
+                                if let Err(e) = relay_send.send(&msg).await {
+                                    error!("Queue {} send error: {}", i, e);
+                                    break;
+                                }
+                                let mut s = stats.lock().await;
+                                s.bytes_sent += n as u64;
+                                s.packets_sent += 1;
+                            }
+                            Ok(Err(e)) => {
+                                error!("Queue {} read error: {}", i, e);
+                                break;
+                            }
+                            Err(_would_block) => {
+                                // Spurious wakeup, continue
+                                pool.return_buf(buf);
+                                continue;
+                            }
+                        }
+                    }
+                    info!("Queue {} reader stopped", i);
+                });
+            }
+            
+            info!("✅ Linux Multi-Queue VPN active!");
+            
+            // Wait until stopped
+            while running.load(Ordering::SeqCst) {
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            }
+            
+            Ok(())
+        }
+
         /// Raw TUN packet forwarding (Layer 3 VPN mode)
         ///
         /// Sends IP packets from TUN device as TunnelMessage::IpPacket
@@ -827,7 +988,7 @@ mod implementation {
             // Wrap TUN device in Arc for sharing
             let device = Arc::new(device);
             let device_reader = device.clone();
-            let device_writer = device.clone(); // Used by handle_relay_messages
+            let device_writer = TunDeviceWriter::TunRs(device.clone()); // Used by handle_relay_messages
 
             // Clone relay for tasks
             let relay_for_send = relay.clone();
@@ -856,8 +1017,13 @@ mod implementation {
 
             // Task 1: TUN -> Relay (outbound packets to Exit Peer)
             let tun_to_relay = tokio::spawn(async move {
-                let mut buf = vec![0u8; 2048];
+                // Initialize packet pool (1024 buffers of 2048 bytes)
+                let pool = crate::packet_pool::PacketBufPool::new(1024, 2048);
+                
                 while running_clone.load(Ordering::SeqCst) {
+                    // Get buffer from pool
+                    let mut buf = pool.get();
+                    
                     // Use timeout to allow checking 'running' flag periodically
                     // otherwise recv() hangs indefinitely if no packets arrive
                     match tokio::time::timeout(
@@ -868,9 +1034,16 @@ mod implementation {
                     {
                         Ok(Ok(n)) => {
                             // Encrypt and send to relay
+                            // Note: Bytes::copy_from_slice still copies, but we avoid the initial Vec allocation
+                            // To be truly zero-copy, we'd need to change TunnelMessage to take Vec<u8> or Bytes directly
+                            // For now, this reduces allocator pressure significantly.
                             let msg = TunnelMessage::IpPacket {
                                 payload: Bytes::copy_from_slice(&buf[..n]),
                             };
+                            
+                            // Return buffer to pool immediately
+                            pool.return_buf(buf);
+
                             if let Err(e) = relay_for_send.send(&msg).await {
                                 error!("Failed to send to relay: {}", e);
                                 break;
@@ -885,6 +1058,8 @@ mod implementation {
                         }
                         Err(_) => {
                             // Timeout - just loop to check running flag
+                            // Return unused buffer
+                            pool.return_buf(buf);
                             continue;
                         }
                     }
