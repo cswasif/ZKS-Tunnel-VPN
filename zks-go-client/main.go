@@ -35,6 +35,7 @@ func main() {
 	room := flag.String("room", "", "Room ID for P2P connection")
 	relayURL := flag.String("relay", defaultRelayURL, "Relay WebSocket URL")
 	listenAddr := flag.String("listen", "127.0.0.1:1080", "SOCKS5 listen address")
+	entryNode := flag.String("entry-node", "", "Entry Node UDP address (e.g. 1.2.3.4:51820)")
 	flag.Parse()
 
 	if *room == "" {
@@ -56,7 +57,7 @@ func main() {
 	case "p2p-client":
 		runP2PClient(*relayURL, *room, *listenAddr)
 	case "p2p-vpn":
-		runP2PVPN(*relayURL, *room)
+		runP2PVPN(*relayURL, *room, *entryNode)
 	case "exit-peer":
 		runExitPeer(*relayURL, *room)
 	default:
@@ -139,33 +140,82 @@ func addRelayBypassRoutes(relayURL string) error {
 	return nil
 }
 
-func runP2PVPN(relayURL, roomID string) {
+func runP2PVPN(relayURL, roomID, entryNode string) {
 	fmt.Println("\n🔒 Starting P2P VPN (System-Wide TUN Mode)...")
 	fmt.Println("⚠️  VPN mode requires Administrator privileges")
 
-	// CRITICAL FIX: Add relay bypass routes BEFORE connecting
-	// This prevents routing loop where relay WebSocket traffic goes through TUN
-	fmt.Println("🔧 Adding relay bypass routes...")
-	if err := addRelayBypassRoutes(relayURL); err != nil {
-		fmt.Printf("⚠️ Bypass route warning: %v (continuing anyway)\n", err)
-	}
+	var transport vpn.Transport
+	var err error
 
-	// 1. Connect to Relay (now safe because bypass routes are in place)
-	fmt.Printf("🔌 Connecting to relay: %s/room/%s?role=client\n", relayURL, roomID)
-	conn, err := relay.Connect(relayURL, roomID, relay.RoleClient)
-	if err != nil {
-		fmt.Printf("❌ Failed to connect: %v\n", err)
-		os.Exit(1)
-	}
-	defer conn.Close()
+	if entryNode != "" {
+		// UDP Mode (Entry Node)
+		fmt.Printf("🚀 Mode: UDP Multi-Hop (Entry Node: %s)\n", entryNode)
+		
+		// Add bypass route for Entry Node to prevent routing loop
+		// We need to resolve the IP first
+		host, _, _ := net.SplitHostPort(entryNode)
+		if host == "" {
+			host = entryNode
+		}
+		
+		fmt.Printf("🔧 Adding bypass route for Entry Node: %s\n", host)
+		// Reuse addRelayBypassRoutes logic but for Entry Node IP
+		// We can just use a simple exec command here for simplicity or refactor addRelayBypassRoutes
+		// Let's just use route add for now
+		gateway := getGateway()
+		if gateway != "" {
+			fmt.Printf("   Gateway: %s\n", gateway)
+			exec.Command("route", "add", host, "mask", "255.255.255.255", gateway, "metric", "1").Run()
+		}
 
-	fmt.Println("✅ Connected to Exit Peer via ZKS relay")
+		fmt.Printf("🔌 Connecting to Entry Node via UDP...\n")
+		transport, err = vpn.NewUDPTransport(entryNode)
+		if err != nil {
+			fmt.Printf("❌ Failed to create UDP transport: %v\n", err)
+			os.Exit(1)
+		}
+		defer transport.Close()
+
+	} else {
+		// WebSocket Relay Mode
+		fmt.Printf("🚀 Mode: WebSocket Relay (Room: %s)\n", roomID)
+
+		// CRITICAL FIX: Add relay bypass routes BEFORE connecting
+		// This prevents routing loop where relay WebSocket traffic goes through TUN
+		fmt.Println("🔧 Adding relay bypass routes...")
+		if err := addRelayBypassRoutes(relayURL); err != nil {
+			fmt.Printf("⚠️ Bypass route warning: %v (continuing anyway)\n", err)
+		}
+
+		// 1. Connect to Relay
+		fmt.Printf("🔌 Connecting to relay: %s/room/%s?role=client\n", relayURL, roomID)
+		conn, err := relay.Connect(relayURL, roomID, relay.RoleClient)
+		if err != nil {
+			fmt.Printf("❌ Failed to connect: %v\n", err)
+			os.Exit(1)
+		}
+		// Wrap in RelayTransport
+		transport = vpn.NewRelayTransport(conn)
+		defer transport.Close()
+		
+		fmt.Println("✅ Connected to Exit Peer via ZKS relay")
+	}
 
 	// 2. Start TUN Device & VPN Logic
-	if err := vpn.StartTUN(conn); err != nil {
+	if err := vpn.StartTUN(transport); err != nil {
 		fmt.Printf("❌ VPN error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func getGateway() string {
+	cmd := exec.Command("powershell", "-Command",
+		"Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Select-Object -ExpandProperty NextHop -First 1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func runExitPeer(relayURL, roomID string) {

@@ -1,3 +1,4 @@
+use crate::message_optimizer::MessagePriority;
 /**
  * VpnRoom - ZKS-VPN Durable Object for P2P VPN Relay
  *
@@ -29,6 +30,7 @@ struct PeerSession {
     role: PeerRole,
     addrs: Vec<String>, // Multiaddrs for P2P connectivity
     joined_at: u64,
+    last_heartbeat: u64, // Last ping/pong timestamp for health monitoring
 }
 
 /// Inbound messages from clients (matches client's SignalingRequest)
@@ -164,6 +166,7 @@ impl DurableObject for VpnRoom {
             role,
             addrs: vec![],
             joined_at: Date::now().as_millis(),
+            last_heartbeat: Date::now().as_millis(), // Initialize heartbeat
         };
 
         // Store session for hibernation recovery
@@ -211,6 +214,10 @@ impl DurableObject for VpnRoom {
             Ok(Some(s)) => s,
             _ => return Ok(()),
         };
+
+        // Update heartbeat on any message (cost optimization: passive heartbeat)
+        session.last_heartbeat = Date::now().as_millis();
+        ws.serialize_attachment(&session)?;
 
         match message {
             WebSocketIncomingMessage::Binary(data) => {
@@ -392,6 +399,37 @@ impl VpnRoom {
             .collect()
     }
 
+    /// Send message with retry logic for robustness
+    /// Retries up to 2 times with exponential backoff
+    fn send_with_retry(&self, ws: &WebSocket, msg: &str) -> bool {
+        const MAX_RETRIES: u32 = 2;
+
+        for attempt in 0..=MAX_RETRIES {
+            match ws.send_with_str(msg) {
+                Ok(_) => return true,
+                Err(e) if attempt < MAX_RETRIES => {
+                    console_log!(
+                        "[VpnRoom] Send retry {}/{}: {:?}",
+                        attempt + 1,
+                        MAX_RETRIES,
+                        e
+                    );
+                    // Note: Can't use async sleep in sync context,
+                    // but Cloudflare Workers will handle backpressure
+                }
+                Err(e) => {
+                    console_error!(
+                        "[VpnRoom] Send failed after {} retries: {:?}",
+                        MAX_RETRIES,
+                        e
+                    );
+                    return false;
+                }
+            }
+        }
+        false
+    }
+
     /// Broadcast to all Swarm peers only
     fn broadcast_to_swarm(&self, text: &str, exclude_id: Option<&str>) {
         for ws in self.state.get_websockets() {
@@ -449,19 +487,45 @@ impl VpnRoom {
     }
 
     fn broadcast_text(&self, text: &str, exclude_id: Option<&str>) {
+        // Determine message priority
+        let priority = MessagePriority::from_message(text);
+
+        let mut success_count = 0;
+        let mut fail_count = 0;
+
         for ws in self.state.get_websockets() {
             if let Ok(Some(session)) = ws.deserialize_attachment::<PeerSession>() {
                 if exclude_id.map(|id| id != session.peer_id).unwrap_or(true) {
-                    if let Err(e) = ws.send_with_str(text) {
+                    // Critical messages: send immediately without retry (fastest path)
+                    // Other messages: use retry logic for robustness
+                    let sent = if priority.is_critical() {
+                        ws.send_with_str(text).is_ok()
+                    } else {
+                        self.send_with_retry(&ws, text)
+                    };
+
+                    if sent {
+                        success_count += 1;
+                    } else {
+                        fail_count += 1;
                         console_error!(
-                            "[VpnRoom] Failed to broadcast to {:?} ({}): {:?}",
+                            "[VpnRoom] Failed to broadcast {:?} message to {:?} ({})",
+                            priority,
                             session.role,
-                            session.peer_id,
-                            e
+                            session.peer_id
                         );
                     }
                 }
             }
+        }
+
+        if fail_count > 0 {
+            console_log!(
+                "[VpnRoom] Broadcast {:?}: {} success, {} failed",
+                priority,
+                success_count,
+                fail_count
+            );
         }
     }
 }

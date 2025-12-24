@@ -18,6 +18,7 @@
 use worker::*;
 
 mod entropy_pool;
+mod message_optimizer;
 mod vpn_room;
 
 pub use entropy_pool::EntropyPool;

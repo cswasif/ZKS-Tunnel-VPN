@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/zks-vpn/zks-go-client/protocol"
-	"github.com/zks-vpn/zks-go-client/relay"
 	"golang.zx2c4.com/wireguard/tun"
 )
 
@@ -25,7 +24,7 @@ const (
 )
 
 // StartTUN creates the TUN device and starts processing packets
-func StartTUN(relayConn *relay.Connection) error {
+func StartTUN(transport Transport) error {
 	log.Printf("🔌 Creating TUN device: %s", tunInterfaceName)
 
 	// Create TUN device using Wintun
@@ -57,7 +56,7 @@ func StartTUN(relayConn *relay.Connection) error {
 	// Start packet processing loops
 	errChan := make(chan error, 2)
 
-	// Read from TUN -> Send to Relay
+	// Read from TUN -> Send to Transport
 	go func() {
 		// Buffer for reading from TUN
 		// WireGuard tun.Read expects [][]byte
@@ -88,11 +87,9 @@ func StartTUN(relayConn *relay.Connection) error {
 				}
 			}
 
-			// Send entire batch as a single WebSocket message
-			// This reduces overhead by 16x compared to individual sends
+			// Send batch via Transport
 			if len(batch) > 0 {
-				msg := &protocol.BatchIpPacket{Packets: batch}
-				if err := relayConn.Send(msg); err != nil {
+				if err := transport.SendBatch(batch); err != nil {
 					// If send fails, return all buffers in batch
 					for _, pkt := range batch {
 						protocol.PutBuffer(pkt)
@@ -102,12 +99,12 @@ func StartTUN(relayConn *relay.Connection) error {
 		}
 	}()
 
-	// Read from Relay -> Write to TUN
+	// Read from Transport -> Write to TUN
 	go func() {
 		for {
-			msg, err := relayConn.Recv()
+			msg, err := transport.Recv()
 			if err != nil {
-				errChan <- fmt.Errorf("relay recv error: %v", err)
+				errChan <- fmt.Errorf("transport recv error: %v", err)
 				return
 			}
 
