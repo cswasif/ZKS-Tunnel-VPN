@@ -50,7 +50,7 @@ impl PacketBufPool {
     }
 
     /// Return a buffer to the pool
-    pub fn return_buf(&self, mut buf: Vec<u8>) {
+    pub fn return_buf(&self, buf: Vec<u8>) {
         // Only return if capacity is sufficient (don't recycle shrunk buffers)
         if buf.capacity() >= self.buf_size {
             // We don't need to zero it out, just clear length

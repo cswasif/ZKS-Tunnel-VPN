@@ -31,12 +31,12 @@ mod key_exchange;
 mod p2p_client;
 mod p2p_relay;
 mod p2p_vpn;
+mod packet_pool;
 mod socks5;
 mod stream_manager;
 mod tunnel;
 mod vpn;
 mod zks_tunnel;
-mod packet_pool;
 
 #[cfg(target_os = "linux")]
 mod tun_multiqueue;
@@ -278,7 +278,7 @@ async fn main() -> Result<(), BoxError> {
             return exit_node_udp::run_exit_node_udp(args.listen_port).await;
         }
         Mode::ExitPeerHybrid => {
-            let _room_id = args.room.clone().unwrap_or_else(|| "default".to_string());
+            let room_id = args.room.clone().unwrap_or_else(|| "default".to_string());
             #[cfg(feature = "vpn")]
             {
                 return run_exit_peer_hybrid_mode(args, room_id).await;

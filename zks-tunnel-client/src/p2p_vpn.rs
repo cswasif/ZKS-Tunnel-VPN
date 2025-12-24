@@ -33,6 +33,11 @@ mod implementation {
     use tokio::sync::{mpsc, Mutex, RwLock};
     use tracing::{debug, error, info, warn};
 
+    use crate::p2p_relay::{P2PRelay, PeerRole};
+    use zks_tunnel_proto::{StreamId, TunnelMessage};
+    use netstack_smoltcp::StackBuilder;
+    use reqwest::Client;
+
     #[cfg(target_os = "linux")]
     use std::os::unix::io::AsRawFd;
     #[cfg(target_os = "linux")]
@@ -52,7 +57,7 @@ mod implementation {
     impl TunDeviceWriter {
         pub async fn send(&self, packet: &[u8]) -> std::io::Result<()> {
             match self {
-                Self::TunRs(d) => d.send(packet).await,
+                Self::TunRs(d) => d.send(packet).await.map(|_| ()),
                 #[cfg(target_os = "linux")]
                 Self::MultiQueue(fd) => {
                     // Wait for writability
@@ -69,7 +74,10 @@ mod implementation {
                             // Let's just return Err(WouldBlock) and let caller handle or ignore?
                             // Actually, tun_rs::AsyncDevice::send handles this internally.
                             // Let's implement a loop.
-                            Err(std::io::Error::new(std::io::ErrorKind::WouldBlock, "WouldBlock"))
+                            Err(std::io::Error::new(
+                                std::io::ErrorKind::WouldBlock,
+                                "WouldBlock",
+                            ))
                         }
                     }
                 }
@@ -851,9 +859,13 @@ mod implementation {
         ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             info!("Creating Multi-Queue TUN device (Linux)...");
             let num_queues = num_cpus::get();
-            info!("Detected {} CPU cores, creating {} queues", num_queues, num_queues);
+            info!(
+                "Detected {} CPU cores, creating {} queues",
+                num_queues, num_queues
+            );
 
-            let device = crate::tun_multiqueue::MultiQueueTun::new(&self.config.device_name, num_queues)?;
+            let device =
+                crate::tun_multiqueue::MultiQueueTun::new(&self.config.device_name, num_queues)?;
 
             // Setup routing (Linux specific)
             {
@@ -907,12 +919,12 @@ mod implementation {
                 let running = running.clone();
                 let stats = stats.clone();
                 let pool = crate::packet_pool::PacketBufPool::new(1024, 2048);
-                
+
                 tokio::spawn(async move {
                     info!("Starting TUN queue {} reader", i);
                     while running.load(Ordering::SeqCst) {
                         let mut buf = pool.get();
-                        
+
                         // Wait for readability
                         let mut guard = match q.readable().await {
                             Ok(g) => g,
@@ -921,7 +933,7 @@ mod implementation {
                                 break;
                             }
                         };
-                        
+
                         match guard.try_io(|inner| inner.get_ref().recv(&mut buf)) {
                             Ok(Ok(n)) => {
                                 // Encrypt and send
@@ -929,7 +941,7 @@ mod implementation {
                                     payload: Bytes::copy_from_slice(&buf[..n]),
                                 };
                                 pool.return_buf(buf);
-                                
+
                                 if let Err(e) = relay_send.send(&msg).await {
                                     error!("Queue {} send error: {}", i, e);
                                     break;
@@ -952,14 +964,14 @@ mod implementation {
                     info!("Queue {} reader stopped", i);
                 });
             }
-            
+
             info!("✅ Linux Multi-Queue VPN active!");
-            
+
             // Wait until stopped
             while running.load(Ordering::SeqCst) {
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
             }
-            
+
             Ok(())
         }
 
@@ -1019,11 +1031,11 @@ mod implementation {
             let tun_to_relay = tokio::spawn(async move {
                 // Initialize packet pool (1024 buffers of 2048 bytes)
                 let pool = crate::packet_pool::PacketBufPool::new(1024, 2048);
-                
+
                 while running_clone.load(Ordering::SeqCst) {
                     // Get buffer from pool
                     let mut buf = pool.get();
-                    
+
                     // Use timeout to allow checking 'running' flag periodically
                     // otherwise recv() hangs indefinitely if no packets arrive
                     match tokio::time::timeout(
@@ -1040,7 +1052,7 @@ mod implementation {
                             let msg = TunnelMessage::IpPacket {
                                 payload: Bytes::copy_from_slice(&buf[..n]),
                             };
-                            
+
                             // Return buffer to pool immediately
                             pool.return_buf(buf);
 
