@@ -58,7 +58,7 @@ impl UserspaceNat {
             .build()
             .unwrap();
 
-        let mut runner = runner.expect("Runner missing");
+        let runner = runner.expect("Runner missing");
         let udp_socket = udp_socket.expect("UDP socket missing");
         let mut tcp_listener = tcp_listener.expect("TCP listener missing");
 
@@ -266,8 +266,8 @@ impl UserspaceNatWriter {
             Err(_) => return Ok(()),
         };
 
-        let src_addr = SocketAddr::new(std::net::IpAddr::V4(ipv4_packet.src_addr().into()), 0);
-        let dst_addr = SocketAddr::new(std::net::IpAddr::V4(ipv4_packet.dst_addr().into()), 0);
+        let src_addr = SocketAddr::new(std::net::IpAddr::V4(ipv4_packet.src_addr()), 0);
+        let dst_addr = SocketAddr::new(std::net::IpAddr::V4(ipv4_packet.dst_addr()), 0);
         debug!("NAT Writer: Packet {} -> {}", src_addr, dst_addr);
 
         let protocol = ipv4_packet.next_header();
@@ -301,10 +301,10 @@ impl UserspaceNatWriter {
                 tcp_packet.set_dst_port(self.listen_port);
 
                 let src_ip_smol = match src_addr.ip() {
-                    std::net::IpAddr::V4(ip) => Ipv4Address::from(ip),
+                    std::net::IpAddr::V4(ip) => ip,
                     _ => unreachable!(),
                 };
-                let virtual_ip_smol = Ipv4Address::from(self.virtual_ip);
+                let virtual_ip_smol = self.virtual_ip;
                 tcp_packet.fill_checksum(
                     &IpAddress::Ipv4(src_ip_smol),
                     &IpAddress::Ipv4(virtual_ip_smol),
@@ -338,10 +338,10 @@ impl UserspaceNatWriter {
                 udp_packet.set_dst_port(self.listen_port);
 
                 let src_ip_smol = match src_addr.ip() {
-                    std::net::IpAddr::V4(ip) => Ipv4Address::from(ip),
+                    std::net::IpAddr::V4(ip) => ip,
                     _ => unreachable!(),
                 };
-                let virtual_ip_smol = Ipv4Address::from(self.virtual_ip);
+                let virtual_ip_smol = self.virtual_ip;
                 udp_packet.fill_checksum(
                     &IpAddress::Ipv4(src_ip_smol),
                     &IpAddress::Ipv4(virtual_ip_smol),
@@ -350,7 +350,7 @@ impl UserspaceNatWriter {
             _ => return Ok(()),
         }
 
-        ipv4_packet.set_dst_addr(self.virtual_ip.into());
+        ipv4_packet.set_dst_addr(self.virtual_ip);
         ipv4_packet.fill_checksum();
 
         // Write to stack (Sink)
@@ -411,10 +411,10 @@ impl UserspaceNatReader {
                             if let Some(orig) = original_src {
                                 tcp_packet.set_src_port(orig.port());
                                 let orig_ip_smol = match orig.ip() {
-                                    std::net::IpAddr::V4(ip) => Ipv4Address::from(ip),
+                                    std::net::IpAddr::V4(ip) => ip,
                                     _ => return Ok(n),
                                 };
-                                let dst_ip_smol = Ipv4Address::from(dst_addr_client);
+                                let dst_ip_smol = dst_addr_client;
                                 tcp_packet.fill_checksum(
                                     &IpAddress::Ipv4(orig_ip_smol),
                                     &IpAddress::Ipv4(dst_ip_smol),
@@ -440,10 +440,10 @@ impl UserspaceNatReader {
                             if let Some(orig) = original_src {
                                 udp_packet.set_src_port(orig.port());
                                 let orig_ip_smol = match orig.ip() {
-                                    std::net::IpAddr::V4(ip) => Ipv4Address::from(ip),
+                                    std::net::IpAddr::V4(ip) => ip,
                                     _ => return Ok(n),
                                 };
-                                let dst_ip_smol = Ipv4Address::from(dst_addr_client);
+                                let dst_ip_smol = dst_addr_client;
                                 udp_packet.fill_checksum(
                                     &IpAddress::Ipv4(orig_ip_smol),
                                     &IpAddress::Ipv4(dst_ip_smol),
@@ -455,7 +455,7 @@ impl UserspaceNatReader {
 
                     if let Some(orig) = original_src {
                         let orig_ip_smol = match orig.ip() {
-                            std::net::IpAddr::V4(ip) => Ipv4Address::from(ip),
+                            std::net::IpAddr::V4(ip) => ip,
                             _ => return Ok(n),
                         };
                         ipv4_packet.set_src_addr(orig_ip_smol);

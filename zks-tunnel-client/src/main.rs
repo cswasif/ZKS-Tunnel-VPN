@@ -49,6 +49,10 @@ mod linux_routing;
 #[cfg(all(target_os = "windows", feature = "vpn"))]
 mod windows_routing;
 
+// DNS leak protection
+#[cfg(feature = "vpn")]
+mod dns_guard;
+
 #[cfg(feature = "swarm")]
 mod p2p_swarm;
 
