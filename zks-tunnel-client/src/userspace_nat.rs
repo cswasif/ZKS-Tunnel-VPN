@@ -12,13 +12,15 @@ use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 use netstack_smoltcp::{AnyIpPktFrame, Stack, StackBuilder};
-use smoltcp::wire::{IpAddress, IpProtocol, Ipv4Address, Ipv4Packet, TcpPacket, UdpPacket};
+use smoltcp::wire::{IpAddress, IpProtocol, Ipv4Packet, TcpPacket, UdpPacket};
 
 /// NAT Table Entry
 #[derive(Debug, Clone)]
 struct NatEntry {
+    #[allow(dead_code)]
     src_addr: SocketAddr, // Original Client Address (10.0.85.1:SrcPort)
     dst_addr: SocketAddr, // Original Destination Address (8.8.8.8:80)
+    #[allow(dead_code)]
     last_active: std::time::Instant,
 }
 

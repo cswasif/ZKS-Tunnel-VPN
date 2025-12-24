@@ -36,11 +36,11 @@ impl DnsGuard {
             #[cfg(target_os = "windows")]
             inner: windows::WindowsDnsGuard::new()
                 .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?,
-            
+
             #[cfg(target_os = "linux")]
             inner: linux::LinuxDnsGuard::new()
-                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?,
-            
+                .map_err(|e| e.into())?,
+
             original_dns: Vec::new(),
             enabled: false,
         })
@@ -70,7 +70,7 @@ impl DnsGuard {
         self.inner
             .set_dns(interface_name, dns_servers.clone())
             .await
-            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
+            .map_err(|e| e.into())?;
 
         self.original_dns = dns_servers;
         self.enabled = true;
@@ -97,7 +97,7 @@ impl DnsGuard {
         self.inner
             .reset_dns()
             .await
-            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
+            .map_err(|e| e.into())?;
 
         self.enabled = false;
 

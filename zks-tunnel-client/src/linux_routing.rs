@@ -9,11 +9,11 @@ use std::net::Ipv4Addr;
 use tracing::info;
 
 #[cfg(target_os = "linux")]
+use rtnetlink::netlink_packet_route::route::{RouteAddress, RouteAttribute, RouteMessage, RouteProtocol, RouteScope, RouteType};
+#[cfg(target_os = "linux")]
+use rtnetlink::netlink_packet_route::AddressFamily;
+#[cfg(target_os = "linux")]
 use rtnetlink::{new_connection, IpVersion};
-#[cfg(target_os = "linux")]
-use netlink_packet_route::route::{RouteMessage, RouteScope, RouteProtocol, RouteType};
-#[cfg(target_os = "linux")]
-use netlink_packet_route::AddressFamily;
 
 #[cfg(target_os = "linux")]
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -32,22 +32,34 @@ pub async fn add_default_route(gateway: Ipv4Addr, interface_index: u32, metric: 
     route.header.protocol = RouteProtocol::Boot;
     route.header.scope = RouteScope::Universe;
     route.header.kind = RouteType::Unicast;
-    
+
     // Add destination (0.0.0.0/0)
-    route.attributes.push(netlink_packet_route::route::RouteAttribute::Destination(
-        vec![0, 0, 0, 0]
-    ));
-    
+    route
+        .attributes
+        .push(RouteAttribute::Destination(
+            RouteAddress::Other(vec![0, 0, 0, 0]),
+        ));
+
     // Add gateway
-    route.attributes.push(netlink_packet_route::route::RouteAttribute::Gateway(
-        gateway.octets().to_vec()
-    ));
-    
+    route
+        .attributes
+        .push(RouteAttribute::Gateway(
+            RouteAddress::Other(gateway.octets().to_vec()),
+        ));
+
     // Add output interface
-    route.attributes.push(netlink_packet_route::route::RouteAttribute::Oif(interface_index));
-    
+    route
+        .attributes
+        .push(RouteAttribute::Oif(
+            interface_index,
+        ));
+
     // Add metric/priority
-    route.attributes.push(netlink_packet_route::route::RouteAttribute::Priority(metric));
+    route
+        .attributes
+        .push(RouteAttribute::Priority(
+            metric,
+        ));
 
     handle.route().add(route).execute().await?;
 
@@ -72,16 +84,20 @@ pub async fn delete_default_route(gateway: Ipv4Addr) -> Result<()> {
     route.header.protocol = RouteProtocol::Boot;
     route.header.scope = RouteScope::Universe;
     route.header.kind = RouteType::Unicast;
-    
+
     // Add destination (0.0.0.0/0)
-    route.attributes.push(netlink_packet_route::route::RouteAttribute::Destination(
-        vec![0, 0, 0, 0]
-    ));
-    
+    route
+        .attributes
+        .push(RouteAttribute::Destination(
+            RouteAddress::Other(vec![0, 0, 0, 0]),
+        ));
+
     // Add gateway
-    route.attributes.push(netlink_packet_route::route::RouteAttribute::Gateway(
-        gateway.octets().to_vec()
-    ));
+    route
+        .attributes
+        .push(RouteAttribute::Gateway(
+            RouteAddress::Other(gateway.octets().to_vec()),
+        ));
 
     handle.route().del(route).execute().await?;
 

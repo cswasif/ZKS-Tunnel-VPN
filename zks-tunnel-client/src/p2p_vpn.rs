@@ -37,6 +37,7 @@ mod implementation {
     use netstack_smoltcp::StackBuilder;
     use reqwest::Client;
     use zks_tunnel_proto::{StreamId, TunnelMessage};
+    use crate::dns_guard::DnsGuard;
 
     #[cfg(target_os = "linux")]
     use crate::tun_multiqueue::TunQueue;
@@ -115,6 +116,7 @@ mod implementation {
         /// Upstream SOCKS5 proxy
         pub proxy: Option<String>,
         /// Exit Peer's VPN IP address (gateway for routing)
+        #[allow(dead_code)]
         pub exit_peer_address: Ipv4Addr,
     }
 
@@ -188,6 +190,7 @@ mod implementation {
         dns_response_tx: Arc<RwLock<Option<mpsc::Sender<(Vec<u8>, SocketAddr)>>>>,
         #[cfg(target_os = "windows")]
         original_fw_policy: Arc<Mutex<Option<String>>>,
+        dns_guard: Arc<Mutex<Option<DnsGuard>>>,
     }
 
     impl P2PVpnController {
@@ -209,6 +212,7 @@ mod implementation {
                 dns_response_tx: Arc::new(RwLock::new(None)),
                 #[cfg(target_os = "windows")]
                 original_fw_policy: Arc::new(Mutex::new(None)),
+                dns_guard: Arc::new(Mutex::new(None)),
             }
         }
 
@@ -462,6 +466,19 @@ mod implementation {
             if self.config.kill_switch {
                 if let Err(e) = self.disable_kill_switch().await {
                     error!("Failed to disable kill switch: {}", e);
+                }
+            }
+
+            // Disable DNS leak protection
+            {
+                let mut guard = self.dns_guard.lock().await;
+                if let Some(mut dns_guard) = guard.take() {
+                    info!("🛡️ Disabling DNS Leak Protection...");
+                    if let Err(e) = dns_guard.disable().await {
+                        error!("Failed to disable DNS leak protection: {}", e);
+                    } else {
+                        info!("✅ DNS Leak Protection disabled");
+                    }
                 }
             }
 
@@ -825,15 +842,29 @@ mod implementation {
                     info!("✅ All VPN routes configured - traffic will go via VPN");
                 }
 
-                #[cfg(target_os = "linux")]
-                {
-                    info!("Setting up routes to capture traffic...");
-                    // Route via Exit Peer's VPN IP, not our own TUN IP
-                    let gateway = format!("{}", self.config.exit_peer_address);
-                    let _ = Command::new("ip")
-                        .args(["route", "add", "default", "via", &gateway, "metric", "5"])
-                        .output();
-                    info!("✅ Default route added via {}", gateway);
+                // Enable DNS leak protection if configured
+                if self.config.dns_protection {
+                    info!("🛡️ Enabling DNS Leak Protection...");
+                    let mut guard = self.dns_guard.lock().await;
+                    match DnsGuard::new() {
+                        Ok(mut dns_guard) => {
+                            let secure_dns = vec![
+                                "1.1.1.1".parse().unwrap(),
+                                "1.0.0.1".parse().unwrap(),
+                            ];
+                            
+                            // On Windows, we use the configured device name which maps to the adapter
+                            if let Err(e) = dns_guard.enable(&self.config.device_name, secure_dns).await {
+                                error!("Failed to enable DNS leak protection: {}", e);
+                            } else {
+                                *guard = Some(dns_guard);
+                                info!("✅ DNS Leak Protection enabled");
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to create DNS guard: {}", e);
+                        }
+                    }
                 }
 
                 // Use raw TUN packet forwarding (Layer 3 VPN mode)
@@ -868,7 +899,7 @@ mod implementation {
                 info!("Setting up routes to capture traffic...");
                 // Route via Exit Peer's VPN IP using rtnetlink API
                 let gateway = self.config.exit_peer_address;
-                
+
                 // Get interface index using if_nametoindex
                 let interface_name_cstr = std::ffi::CString::new(device.name()).unwrap();
                 let interface_index = unsafe { libc::if_nametoindex(interface_name_cstr.as_ptr()) };
@@ -892,6 +923,30 @@ mod implementation {
                             ])
                             .output();
                         info!("✅ Default route added via {} (shell fallback)", gateway);
+                    }
+                }
+            }
+
+            // Enable DNS leak protection if configured
+            if self.config.dns_protection {
+                info!("🛡️ Enabling DNS Leak Protection...");
+                let mut guard = self.dns_guard.lock().await;
+                match DnsGuard::new() {
+                    Ok(mut dns_guard) => {
+                        let secure_dns = vec![
+                            "1.1.1.1".parse().unwrap(),
+                            "1.0.0.1".parse().unwrap(),
+                        ];
+                        
+                        if let Err(e) = dns_guard.enable(device.name(), secure_dns).await {
+                            error!("Failed to enable DNS leak protection: {}", e);
+                        } else {
+                            *guard = Some(dns_guard);
+                            info!("✅ DNS Leak Protection enabled");
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to create DNS guard: {}", e);
                     }
                 }
             }

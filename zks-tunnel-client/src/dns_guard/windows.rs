@@ -7,8 +7,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use tracing::{debug, info};
 use windows_sys::core::GUID;
 use windows_sys::Win32::NetworkManagement::IpHelper::{
-    DNS_INTERFACE_SETTINGS, DNS_INTERFACE_SETTINGS_VERSION1,
-    DNS_SETTING_NAMESERVER,
+    DNS_INTERFACE_SETTINGS, DNS_INTERFACE_SETTINGS_VERSION1, DNS_SETTING_NAMESERVER,
 };
 
 type Result<T> = std::result::Result<T, std::io::Error>;
@@ -86,8 +85,7 @@ fn interface_to_guid(name: &str) -> Result<GUID> {
     use crate::windows_routing;
 
     // Get interface index first
-    let _ = windows_routing::get_tun_interface_index(name)
-        .map_err(|e| std::io::Error::other(e))?;
+    let _ = windows_routing::get_tun_interface_index(name).map_err(|e| std::io::Error::other(e))?;
 
     // For now, use a placeholder GUID generation
     // In production, use actual LUID -> GUID conversion from iphlpapi
@@ -134,9 +132,7 @@ unsafe fn set_interface_dns_settings(ipv4_servers: &[Ipv4Addr]) -> Result<()> {
             .map_err(|e| std::io::Error::other(e))?;
 
         if !output.status.success() {
-            return Err(std::io::Error::other(
-                format!("netsh failed: {:?}", output),
-            ));
+            return Err(std::io::Error::other(format!("netsh failed: {:?}", output)));
         }
     }
 
