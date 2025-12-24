@@ -18,7 +18,7 @@ use tokio::sync::Mutex;
 use tokio::time::{interval, Duration};
 use tokio_socks::tcp::Socks5Stream;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{client_async, connect_async, WebSocketStream};
+use tokio_tungstenite::{client_async, WebSocketStream};
 use tracing::{debug, info, warn};
 use url::Url;
 use zks_tunnel_proto::TunnelMessage;
