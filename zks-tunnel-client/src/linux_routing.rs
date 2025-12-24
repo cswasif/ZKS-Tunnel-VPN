@@ -9,11 +9,11 @@ use std::net::Ipv4Addr;
 use tracing::info;
 
 #[cfg(target_os = "linux")]
-use rtnetlink::netlink_packet_route::route::{RouteAddress, RouteAttribute, RouteMessage, RouteProtocol, RouteScope, RouteType};
+use netlink_packet_route::route::{RouteAddress, RouteAttribute, RouteMessage, RouteProtocol, RouteScope, RouteType};
 #[cfg(target_os = "linux")]
-use rtnetlink::netlink_packet_route::AddressFamily;
+use netlink_packet_route::AddressFamily;
 #[cfg(target_os = "linux")]
-use rtnetlink::{new_connection, IpVersion};
+use rtnetlink::new_connection;
 
 #[cfg(target_os = "linux")]
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
