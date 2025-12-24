@@ -4,11 +4,9 @@
 //! instead of shell commands, following Mullvad VPN's approach for reliability.
 
 #[cfg(target_os = "windows")]
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::Ipv4Addr;
 #[cfg(target_os = "windows")]
-use tracing::{debug, error, info, warn};
-#[cfg(target_os = "windows")]
-use widestring::WideCString;
+use tracing::{debug, error, info};
 
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::{
@@ -17,13 +15,13 @@ use windows_sys::Win32::{
         CreateIpForwardEntry2, DeleteIpForwardEntry2, InitializeIpForwardEntry,
         MIB_IPFORWARD_ROW2, GetAdaptersAddresses, IP_ADAPTER_ADDRESSES_LH,
         GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST, GAA_FLAG_SKIP_DNS_SERVER,
-        GAA_FLAG_SKIP_FRIENDLY_NAME, ConvertInterfaceNameToLuidW,
+        GAA_FLAG_SKIP_FRIENDLY_NAME,
     },
-    Networking::WinSock::{AF_INET, AF_UNSPEC, MIB_IPPROTO_NETMGMT, NlroManual, SOCKADDR_IN},
+    Networking::WinSock::{AF_INET, AF_UNSPEC, MIB_IPPROTO_NETMGMT, NlroManual},
 };
 
 #[cfg(target_os = "windows")]
-pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 /// Get TUN interface index by name pattern (e.g., "tun")
 #[cfg(target_os = "windows")]
@@ -72,7 +70,7 @@ pub fn get_tun_interface_index(name_pattern: &str) -> Result<u32> {
             
             // Get adapter name (FriendlyName would be null due to flag, use AdapterName)
             if !adapter_ref.AdapterName.is_null() {
-                let adapter_name = std::ffi::CStr::from_ptr(adapter_ref.AdapterName)
+                let adapter_name = std::ffi::CStr::from_ptr(adapter_ref.AdapterName as *const i8)
                     .to_string_lossy();
                 
                 // Check if adapter name contains the pattern (e.g., "tun")
