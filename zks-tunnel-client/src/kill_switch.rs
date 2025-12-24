@@ -1,30 +1,28 @@
 use std::net::IpAddr;
 
 #[cfg(target_os = "windows")]
-use self::windows::WindowsKillSwitch;
+use self::windows::WindowsKillSwitch as InnerKillSwitch;
 #[cfg(target_os = "linux")]
-use self::linux::LinuxKillSwitch;
+use self::linux::LinuxKillSwitch as InnerKillSwitch;
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+use self::stub::StubKillSwitch as InnerKillSwitch;
 
 #[cfg(target_os = "windows")]
 pub mod windows;
 #[cfg(target_os = "linux")]
 pub mod linux;
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+pub mod stub;
 
 pub struct KillSwitch {
-    #[cfg(target_os = "windows")]
-    inner: WindowsKillSwitch,
-    #[cfg(target_os = "linux")]
-    inner: LinuxKillSwitch,
+    inner: InnerKillSwitch,
     enabled: bool,
 }
 
 impl KillSwitch {
     pub fn new() -> Self {
         Self {
-            #[cfg(target_os = "windows")]
-            inner: WindowsKillSwitch::new(),
-            #[cfg(target_os = "linux")]
-            inner: LinuxKillSwitch::new(),
+            inner: InnerKillSwitch::new(),
             enabled: false,
         }
     }
