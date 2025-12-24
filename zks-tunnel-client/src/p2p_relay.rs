@@ -206,7 +206,7 @@ impl EntropyTaxPayer {
         // With LavaRand, we just verify the endpoint is healthy
         let url = format!("{}/health", self.vernam_url.trim_end_matches('/'));
         let response = reqwest::get(&url).await?;
-        
+
         if response.status().is_success() {
             debug!("Entropy endpoint healthy");
             Ok(())
