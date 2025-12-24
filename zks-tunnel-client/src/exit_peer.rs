@@ -633,12 +633,12 @@ pub async fn run_exit_peer_vpn(
             ])
             .output();
                 // Allow traffic on zks0
-        let _ = std::process::Command::new("iptables")
-            .args(["-A", "INPUT", "-i", "zks0", "-j", "ACCEPT"])
-            .output();
-        let _ = std::process::Command::new("iptables")
-            .args(["-A", "FORWARD", "-i", "zks0", "-j", "ACCEPT"])
-            .output();
+                let _ = std::process::Command::new("iptables")
+                    .args(["-A", "INPUT", "-i", "zks0", "-j", "ACCEPT"])
+                    .output();
+                let _ = std::process::Command::new("iptables")
+                    .args(["-A", "FORWARD", "-i", "zks0", "-j", "ACCEPT"])
+                    .output();
         let _ = std::process::Command::new("iptables")
             .args(["-A", "FORWARD", "-o", "zks0", "-j", "ACCEPT"])
             .output();

@@ -34,15 +34,12 @@ mod implementation {
     use tracing::{debug, error, info, warn};
 
     use crate::p2p_relay::{P2PRelay, PeerRole};
-    use zks_tunnel_proto::{StreamId, TunnelMessage};
     use netstack_smoltcp::StackBuilder;
     use reqwest::Client;
-
-    #[cfg(target_os = "linux")]
+    use zks_tunnel_proto::{StreamId, TunnelMessage};
 
     #[cfg(target_os = "linux")]
     use tokio::io::unix::AsyncFd;
-
     #[cfg(target_os = "linux")]
     use crate::tun_multiqueue::TunQueue;
 
