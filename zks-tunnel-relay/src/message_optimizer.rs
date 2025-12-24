@@ -54,6 +54,7 @@ impl MessagePriority {
 }
 
 /// Compress message if it's large enough to benefit
+#[allow(dead_code)]
 pub fn maybe_compress(msg: &str) -> (Vec<u8>, bool) {
     const COMPRESSION_THRESHOLD: usize = 1024; // 1KB
 
@@ -82,6 +83,7 @@ pub fn maybe_compress(msg: &str) -> (Vec<u8>, bool) {
 }
 
 /// Decompress message if it was compressed
+#[allow(dead_code)]
 pub fn maybe_decompress(data: &[u8], was_compressed: bool) -> Result<String, String> {
     if !was_compressed {
         String::from_utf8(data.to_vec()).map_err(|e| format!("UTF-8 decode error: {}", e))
