@@ -980,6 +980,48 @@ mod implementation {
             let device =
                 crate::tun_multiqueue::MultiQueueTun::new(&self.config.device_name, num_queues)?;
 
+            // Assign IP address to TUN interface (REQUIRED for routing to work)
+            let ip_addr = self.config.address;
+            let netmask_prefix = match self.config.netmask.octets() {
+                [255, 255, 255, 0] => 24,
+                [255, 255, 0, 0] => 16,
+                [255, 0, 0, 0] => 8,
+                _ => 24, // Default to /24
+            };
+            info!("Assigning IP {}/{} to {}", ip_addr, netmask_prefix, device.name());
+            
+            // Add IP address to interface
+            let ip_cmd = std::process::Command::new("ip")
+                .args(["addr", "add", &format!("{}/{}", ip_addr, netmask_prefix), "dev", device.name()])
+                .output();
+            match ip_cmd {
+                Ok(output) if output.status.success() => {
+                    info!("✅ IP address assigned: {}/{}", ip_addr, netmask_prefix);
+                }
+                Ok(output) => {
+                    warn!("Failed to assign IP: {}", String::from_utf8_lossy(&output.stderr));
+                }
+                Err(e) => {
+                    warn!("Failed to run ip addr command: {}", e);
+                }
+            }
+
+            // Bring interface UP
+            let link_cmd = std::process::Command::new("ip")
+                .args(["link", "set", device.name(), "up"])
+                .output();
+            match link_cmd {
+                Ok(output) if output.status.success() => {
+                    info!("✅ Interface {} is UP", device.name());
+                }
+                Ok(output) => {
+                    warn!("Failed to bring interface up: {}", String::from_utf8_lossy(&output.stderr));
+                }
+                Err(e) => {
+                    warn!("Failed to run ip link command: {}", e);
+                }
+            }
+
             // Setup routing (Linux specific)
             if self.config.server_mode {
                 info!("Server Mode: Skipping default route setup. Enabling NAT...");
