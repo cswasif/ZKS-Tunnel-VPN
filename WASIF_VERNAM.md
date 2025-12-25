@@ -263,6 +263,16 @@ Achieving **Information-Theoretic Security** comes with a physical cost.
 
 **Note:** If bandwidth is a concern, the protocol automatically falls back to `Mode 0x02` (HKDF), which has standard overhead (0%), but "only" Computational Security (ChaCha20).
 
+### Will it slow down streaming? (e.g., 4K Video)
+
+**No.** The protocol is **Adaptive**:
+
+1.  **Start:** Uses True Vernam (Unbreakable) for the initial handshake and buffering.
+2.  **High Load:** If you stream 4K video (25 Mbps) and drain the entropy buffer, it **seamlessly switches** to Standard Mode (HKDF).
+3.  **Result:** You get **WireGuard-level speeds** for heavy data, and **One-Time Pad security** for sensitive data (chat, keys, headers).
+
+**Zero Buffering:** The switch happens instantly per-packet. You won't notice a thing.
+
 | Property | Mechanism |
 |----------|-----------|
 | **Information-Theoretic Security** | True random, non-repeating key material |
