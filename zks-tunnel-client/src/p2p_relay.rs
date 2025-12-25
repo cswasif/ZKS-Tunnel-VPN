@@ -564,7 +564,6 @@ pub struct P2PRelay {
     pub key_exchange: Arc<Mutex<KeyExchange>>,
 }
 
-
 #[allow(dead_code)]
 impl P2PRelay {
     /// Connect to relay and establish P2P session with key exchange
