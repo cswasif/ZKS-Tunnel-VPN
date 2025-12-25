@@ -183,23 +183,21 @@ pub async fn run_swarm_loop(
                 debug!("🏓 Ping event: {:?}", event);
             }
             SwarmEvent::Behaviour(SwarmBehaviourEvent::Kademlia(
-                kad::Event::OutboundQueryProgressed { result, .. },
+                kad::Event::OutboundQueryProgressed {
+                    result:
+                        kad::QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders {
+                            providers, ..
+                        })),
+                    ..
+                },
             )) => {
-                match result {
-                    kad::QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders {
-                        providers,
-                        ..
-                    })) => {
-                        for peer_id in providers {
-                            info!("🕸️ DHT found peer: {}", peer_id);
-                            // Swarm will automatically try to connect if we dial or if they are in our routing table?
-                            // No, we should explicitly dial them if we are not connected.
-                            // But for now, just logging. Kademlia might auto-connect depending on config.
-                            // Let's explicitly dial.
-                            let _ = swarm.dial(peer_id);
-                        }
-                    }
-                    _ => {}
+                for peer_id in providers {
+                    info!("🕸️ DHT found peer: {}", peer_id);
+                    // Swarm will automatically try to connect if we dial or if they are in our routing table?
+                    // No, we should explicitly dial them if we are not connected.
+                    // But for now, just logging. Kademlia might auto-connect depending on config.
+                    // Let's explicitly dial.
+                    let _ = swarm.dial(peer_id);
                 }
             }
             SwarmEvent::Behaviour(SwarmBehaviourEvent::Kademlia(event)) => {

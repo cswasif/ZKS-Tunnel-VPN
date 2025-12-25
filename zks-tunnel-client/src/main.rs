@@ -77,7 +77,6 @@ mod traffic_shaping;
 pub mod true_vernam;
 
 #[cfg(feature = "swarm")]
-#[cfg(feature = "swarm")]
 mod signaling;
 
 #[cfg(feature = "swarm")]
