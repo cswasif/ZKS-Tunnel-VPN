@@ -142,7 +142,7 @@ pub enum Mode {
 #[command(about = "Serverless VPN via Cloudflare Workers", long_about = None)]
 pub struct Args {
     /// ZKS-Tunnel Worker WebSocket URL
-    #[arg(short, long, default_value = "wss://zks-tunnel.workers.dev/tunnel")]
+    #[arg(short, long, default_value = "wss://zks-tunnel-relay.md-wasif-faisal.workers.dev")]
     worker: String,
 
     /// Operating mode: socks5 (browser only) or vpn (system-wide)
