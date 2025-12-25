@@ -18,6 +18,9 @@ use crate::traffic_mixer::{
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, error, info, warn};
+use std::collections::HashMap;
+use std::net::Ipv4Addr;
+use crate::p2p_relay::TunnelMessage;
 
 /// Configuration for swarm operation
 #[derive(Clone, Debug)]
@@ -97,6 +100,9 @@ pub struct SwarmController {
     /// Configuration
     config: SwarmControllerConfig,
 
+    /// Routing table for Exit Node (Client IP -> Relay Sender)
+    routes: Arc<RwLock<HashMap<Ipv4Addr, mpsc::Sender<TunnelMessage>>>>,
+
     /// Shutdown signal
     shutdown_tx: Option<mpsc::Sender<()>>,
 }
@@ -110,7 +116,9 @@ impl SwarmController {
             exit_active: Arc::new(RwLock::new(false)),
             entropy_tax: Arc::new(Mutex::new(EntropyTax::new())),
             config,
+            routes: Arc::new(RwLock::new(HashMap::new())),
             shutdown_tx: None,
+            shutdown_rx: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -132,8 +140,9 @@ impl SwarmController {
             self.show_exit_disclaimer();
         }
 
-        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+        let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>(1);
         self.shutdown_tx = Some(shutdown_tx);
+        *self.shutdown_rx.lock().await = Some(shutdown_rx);
 
         // Start VPN client service
         if self.config.enable_client {
@@ -168,7 +177,7 @@ impl SwarmController {
         info!("   - Exit: {}", self.config.enable_exit);
 
         // Wait for shutdown signal
-        let _ = shutdown_rx.recv().await;
+        let _ = self.shutdown_rx.lock().await.as_mut().unwrap().recv().await;
 
         Ok(())
     }
@@ -255,6 +264,7 @@ impl SwarmController {
         let room_id = self.config.room_id.clone();
         let vpn_client = self.vpn_client.clone();
         let server_mode = self.config.server_mode;
+        let routes = self.routes.clone();
 
         tokio::spawn(async move {
             loop {
@@ -274,65 +284,127 @@ impl SwarmController {
 
                         // If in Server Mode, setup bidirectional forwarding with TUN
                         if server_mode && vpn_client.is_some() {
-                            let client = vpn_client.as_ref().unwrap();
+                            let client = vpn_client.as_ref().unwrap().clone();
+                            let routes = routes.clone();
+                            let relay = relay.clone();
 
-                            // 1. TUN -> Relay (Outbound)
-                            // We need to get a new receiver for each connection
-                            // Note: This assumes single client connection at a time for now
-                            let outbound_rx_opt = client.lock().await.get_outbound_rx().await;
-                            
-                            if let Some(mut outbound_rx) = outbound_rx_opt {
+                            // Spawn handler for this client
+                            tokio::spawn(async move {
+                                // Create channel for sending TO this client (used by Outbound Router)
+                                let (client_tx, mut client_rx) = mpsc::channel(1000);
                                 let relay_send = relay.clone();
+
+                                // Task: Rx from Channel -> Relay (Outbound from TUN)
                                 tokio::spawn(async move {
-                                    while let Some(packet) = outbound_rx.recv().await {
-                                        let msg = crate::p2p_relay::TunnelMessage::IpPacket {
-                                            payload: bytes::Bytes::from(packet),
-                                        };
+                                    while let Some(msg) = client_rx.recv().await {
                                         if let Err(e) = relay_send.send(&msg).await {
-                                            warn!("Failed to forward outbound packet to client: {}", e);
+                                            warn!("Failed to send to client relay: {}", e);
                                             break;
                                         }
                                     }
                                 });
-                            }
 
-                            // 2. Relay -> TUN (Inbound)
-                            while let Ok(msg) = relay.recv().await {
-                                if let Some(msg) = msg {
-                                    match msg {
-                                        crate::p2p_relay::TunnelMessage::IpPacket { payload } => {
-                                            // Inject into TUN
-                                            client.lock().await.inject_packet(payload.to_vec()).await;
+                                // Task: Rx from Relay -> TUN (Inbound to Exit)
+                                while let Ok(msg) = relay.recv().await {
+                                    if let Some(msg) = msg {
+                                        match msg {
+                                            TunnelMessage::IpPacket { payload } => {
+                                                // 1. Learn Source IP
+                                                if payload.len() >= 20 {
+                                                    // IPv4 Source IP is at offset 12
+                                                    let src_ip = Ipv4Addr::new(
+                                                        payload[12], payload[13], payload[14], payload[15],
+                                                    );
+                                                    
+                                                    // Update routing table
+                                                    {
+                                                        let mut r = routes.write().await;
+                                                        if !r.contains_key(&src_ip) {
+                                                            info!("🆕 Learned route: {} -> Client", src_ip);
+                                                            r.insert(src_ip, client_tx.clone());
+                                                        }
+                                                    }
+                                                }
+
+                                                // 2. Inject into TUN
+                                                client.lock().await.inject_packet(payload.to_vec()).await;
+                                            }
+                                            _ => {
+                                                debug!("Exit Service received non-IP message: {:?}", msg);
+                                            }
                                         }
-                                        _ => {
-                                            debug!("Exit Service received non-IP message: {:?}", msg);
-                                        }
+                                    } else {
+                                        break; // Connection closed
                                     }
-                                } else {
-                                    break; // Connection closed
                                 }
-                            }
+                                
+                                // Cleanup route? 
+                                // Ideally yes, but we don't know which IP unless we stored it.
+                                // For now, let it stale.
+                                warn!("Client disconnected");
+                            });
                         } else {
                             // Legacy/Placeholder mode (just keep alive)
-                            while let Ok(_msg) = relay.recv().await {
-                                // TODO: Forward to ExitService (SOCKS/HTTP)
-                            }
+                            tokio::spawn(async move {
+                                while let Ok(_msg) = relay.recv().await {
+                                    // TODO: Forward to ExitService (SOCKS/HTTP)
+                                }
+                            });
                         }
-
-                        warn!("🌍 Exit Service connection closed. Restarting listener...");
                     }
                     Err(e) => {
                         // Don't log "timeout" as error, it's normal waiting
                         if e.to_string().contains("AuthInit timeout") {
                             debug!("🌍 Exit Service: No client connected (timeout), retrying...");
                         } else {
-                            error!("🌍 Exit Service connection error: {}", e);
+                            warn!("Exit Service connect error: {}. Retrying...", e);
                         }
                         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                     }
                 }
             }
         });
+
+        // Spawn Outbound Router (TUN -> Clients)
+        // Only one router needed for all clients
+        if server_mode && self.vpn_client.is_some() {
+            let client = self.vpn_client.as_ref().unwrap().clone();
+            let routes = self.routes.clone();
+            
+            // Get outbound_rx (from TUN)
+            let outbound_rx_opt = client.lock().await.get_outbound_rx().await;
+            
+            if let Some(mut outbound_rx) = outbound_rx_opt {
+                tokio::spawn(async move {
+                    while let Some(packet) = outbound_rx.recv().await {
+                        // Parse Dest IP
+                        if packet.len() >= 20 {
+                            let dst_ip = Ipv4Addr::new(
+                                packet[16], packet[17], packet[18], packet[19],
+                            );
+
+                            // Lookup route
+                            let tx = {
+                                let r = routes.read().await;
+                                r.get(&dst_ip).cloned()
+                            };
+
+                            if let Some(tx) = tx {
+                                let msg = TunnelMessage::IpPacket {
+                                    payload: bytes::Bytes::from(packet),
+                                };
+                                if let Err(e) = tx.send(msg).await {
+                                    warn!("Failed to route packet to {}: {}", dst_ip, e);
+                                    // Remove stale route?
+                                }
+                            } else {
+                                // debug!("No route for dest: {}", dst_ip);
+                            }
+                        }
+                    }
+                });
+            }
+        }
 
         info!("🌍 Exit service started (providing internet gateway)");
 

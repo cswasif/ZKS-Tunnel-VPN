@@ -161,8 +161,9 @@ pub struct Args {
     #[arg(long, default_value = "zks0")]
     tun_name: String,
 
-    #[arg(long, default_value = "10.0.85.1")]
-    vpn_address: String,
+    /// VPN IP address (auto-generated if not provided)
+    #[arg(long)]
+    vpn_address: Option<String>,
 
     /// Exit Peer VPN IP address (gateway for routing)
     #[arg(long, default_value = "10.0.85.2")]
@@ -866,6 +867,14 @@ async fn run_swarm_mode(args: Args, room_id: String) -> Result<(), BoxError> {
     info!("   Signaling: {}", args.relay);
     info!("   Mode: Client + Relay + Exit");
 
+    // Generate random IP if not provided
+    let vpn_address = args.vpn_address.unwrap_or_else(|| {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        format!("10.{}.{}.{}", rng.gen::<u8>(), rng.gen::<u8>(), rng.gen::<u8>())
+    });
+    info!("🎲 Assigned VPN IP: {}", vpn_address);
+
     // Create swarm configuration from CLI args
     let config = SwarmControllerConfig {
         enable_client: !args.no_client,
@@ -875,7 +884,7 @@ async fn run_swarm_mode(args: Args, room_id: String) -> Result<(), BoxError> {
         relay_url: args.relay.clone(),
         vernam_url: format!("{}/entropy", args.vernam),
         exit_consent_given: args.exit_consent,
-        vpn_address: args.vpn_address.clone(),
+        vpn_address: vpn_address,
         server_mode: args.server,
     };
 
