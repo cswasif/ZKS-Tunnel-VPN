@@ -32,7 +32,7 @@ ZKS (Zero-Knowledge Swarm) is a secure communication protocol, operating at laye
 | | 3.3 Replay Protection | 8 |
 | | 3.4 Constant-Time Operations | 8 |
 | | 3.5 Key Rotation & Ratcheting | 9 |
-| | 3.6 Wasif-Vernam v2.0: Information-Theoretic Security | 9 |
+| | 3.6 Wasif-Vernam: Information-Theoretic Security | 9 |
 | 4 | Protocol Overview | 9 |
 | | 4.1 Framing & Encapsulation | 9 |
 | | 4.2 Handshake Protocol | 10 |
@@ -87,7 +87,7 @@ ZKS is built on three core principles:
 
 This paper makes the following contributions:
 
-- **Wasif-Vernam Cipher:** A novel XOR-based encryption scheme providing **information-theoretic security** through triple-source entropy (local CSPRNG, Cloudflare LavaRand, and peer-collected randomness). The v2.0 evolution delivers mathematically unbreakable encryption with defense-in-depth ChaCha20-Poly1305 layering and graceful HKDF fallback.
+- **Wasif-Vernam Cipher:** A novel XOR-based encryption scheme providing **information-theoretic security** through triple-source entropy (local CSPRNG, Cloudflare LavaRand, and peer-collected randomness). Delivers mathematically unbreakable encryption with defense-in-depth ChaCha20-Poly1305 layering and graceful HKDF fallback.
 
 - **Entropy Tax:** A decentralized mechanism for generating cryptographic randomness from the participation of peers in the network, reducing reliance on potentially compromised local random number generators.
 
@@ -343,15 +343,15 @@ The Entropy Tax requires each peer to contribute cryptographically random bytes 
 - **Commitment:** Hash commitment prevents adaptive attacks
 - **Availability:** Protocol degrades gracefully if some peers don't reveal (use only committed peers)
 
-### 3.6 Wasif-Vernam v2.0: Information-Theoretic Security
+### 3.6 Wasif-Vernam: Information-Theoretic Security
 
-The Wasif-Vernam cipher has evolved to provide **information-theoretic security**—mathematically unbreakable encryption using truly random, non-repeating key material from triple-source entropy.
+The Wasif-Vernam cipher provides **information-theoretic security**—mathematically unbreakable encryption using truly random, non-repeating key material from triple-source entropy.
 
 #### Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│              WASIF-VERNAM v2.0 ENCRYPTION                   │
+│               WASIF-VERNAM ENCRYPTION                       │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
 │    Plaintext                                                │
