@@ -192,16 +192,30 @@ impl TrueVernamBuffer {
 
 ## Layer 2: ChaCha20-Poly1305 AEAD (Defense-in-Depth)
 
+This is the standard "military-grade" encryption layer used by WireGuard, Google, and Cloudflare. It serves as a safety net.
+
+### What does it do?
+
+1.  **ChaCha20 (Encryption):**
+    *   Turns your data into "noise" using the **Session Key**.
+    *   It's a stream cipher, meaning it generates a stream of random bytes and XORs them with your data.
+    *   *Why?* It's extremely fast (faster than AES on mobile) and secure.
+
+2.  **Poly1305 (Authentication):**
+    *   Creates a digital "tag" or "fingerprint" (MAC) for the encrypted data.
+    *   *Why?* It ensures **Integrity**. If a hacker modifies even ONE bit of the encrypted packet, the tag won't match, and the packet is rejected instantly.
+
 ```rust
+// Rust Implementation
 let cipher = ChaCha20Poly1305::new(&session_key);
-let nonce = generate_unique_nonce();
+let nonce = generate_unique_nonce(); // Unique per packet
 let ciphertext = cipher.encrypt(&nonce, xored_data)?;
 ```
 
-**Purpose:**
-- Provides authenticated encryption even if XOR layer is compromised
-- Protects the embedded XOR key in the wire format
-- Ensures integrity via Poly1305 MAC
+**Purpose in Wasif-Vernam:**
+- **Defense-in-Depth:** Even if the True Vernam XOR layer is somehow bypassed, the attacker still has to break standard ChaCha20 encryption.
+- **Integrity:** The True Vernam XOR layer adds randomness but doesn't check for tampering. Poly1305 fixes that.
+- **Hiding the Key:** The True Vernam XOR key itself is sent inside this encrypted envelope, so no one can steal it.
 
 ## Wire Format
 
