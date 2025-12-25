@@ -678,7 +678,7 @@ If hole punching fails after 3 attempts, traffic is relayed through R. The relay
 | **Exit** | Terminates tunnel, routes to Internet |
 | **Swarm** | Full participant, may act as any role |
 
-In Swarm Mode, all participants have `Swarm` role and dynamically take on `Exit` or `Relay` responsibilities based on routing decisions.
+In Swarm Mode (the default configuration), all participants are **Client + Relay + Exit** nodes. This "True Swarm" topology ensures maximum decentralization and plausible deniability, as every node contributes bandwidth and exit capacity to the network. Users can opt-out of specific roles (e.g., `--no-exit`) if desired.
 
 ---
 
