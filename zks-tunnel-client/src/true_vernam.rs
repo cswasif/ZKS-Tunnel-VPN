@@ -176,8 +176,11 @@ impl TrueVernamFetcher {
         
         // 2. Worker entropy (Cloudflare's hardware RNG + LavaRand)
         let worker_entropy = self.fetch_worker_entropy().await.unwrap_or_else(|e| {
-            warn!("Worker entropy fetch failed: {}, using local only", e);
-            vec![0u8; 32] // Fallback to zeros (local entropy still protects)
+            warn!("Worker entropy fetch failed: {}, using additional local randomness", e);
+            // Fallback: generate MORE local entropy (not zeros!)
+            let mut fallback = [0u8; 32];
+            getrandom::getrandom(&mut fallback).unwrap_or_default();
+            fallback.to_vec()
         });
         
         // 3. Combine all entropy sources using SHA256
