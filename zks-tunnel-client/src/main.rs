@@ -662,8 +662,8 @@ pub async fn start_p2p_vpn(
         info!("   DNS protection: ENABLED (queries via DoH)");
     }
 
-    let entropy_tax = Arc::new(Mutex::new(EntropyTax::new()));
-    let vpn = P2PVpnController::new(config, entropy_tax);
+    let _entropy_tax = Arc::new(Mutex::new(EntropyTax::new()));
+    let vpn = P2PVpnController::new(config);
     vpn.start().await?;
 
     Ok(vpn)
