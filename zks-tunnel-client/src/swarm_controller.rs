@@ -17,7 +17,7 @@ use crate::traffic_mixer::{
 };
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, RwLock};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Configuration for swarm operation
 #[derive(Clone, Debug)]
@@ -238,6 +238,44 @@ impl SwarmController {
 
         tokio::spawn(async move {
             exit_service.run().await;
+        });
+
+        // Start Exit Relay (Network Connection)
+        let relay_url = self.config.relay_url.clone();
+        let vernam_url = self.config.vernam_url.clone();
+        let room_id = self.config.room_id.clone();
+
+        tokio::spawn(async move {
+            loop {
+                info!("🌍 Exit Service waiting for client connection...");
+                match crate::p2p_relay::P2PRelay::connect(
+                    &relay_url,
+                    &vernam_url,
+                    &room_id,
+                    crate::p2p_relay::PeerRole::ExitPeer,
+                    None,
+                )
+                .await
+                {
+                    Ok(relay) => {
+                        info!("🌍 Exit Service CONNECTED to a client! (Tunnel established)");
+                        // Keep connection alive
+                        while let Ok(_msg) = relay.recv().await {
+                            // TODO: Forward to ExitService
+                        }
+                        warn!("🌍 Exit Service client disconnected");
+                    }
+                    Err(e) => {
+                        // Don't log "timeout" as error, it's normal waiting
+                        if e.to_string().contains("AuthInit timeout") {
+                            debug!("🌍 Exit Service: No client connected (timeout), retrying...");
+                        } else {
+                            error!("🌍 Exit Service connection error: {}", e);
+                        }
+                        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                    }
+                }
+            }
         });
 
         info!("🌍 Exit service started (providing internet gateway)");
