@@ -154,7 +154,7 @@ mod implementation {
 
     /// Reconnection configuration constants
     #[allow(dead_code)]
-    const MAX_RECONNECT_ATTEMPTS: u32 = 5;
+    const MAX_RECONNECT_ATTEMPTS: u32 = u32::MAX; // Infinite retries for Swarm Mode
     #[allow(dead_code)]
     const INITIAL_BACKOFF_MS: u64 = 1000;
     #[allow(dead_code)]
@@ -233,18 +233,19 @@ mod implementation {
             info!("  Device: {}", self.config.device_name);
             info!("  Address: {}/{}", self.config.address, self.config.netmask);
 
-            // Connect to relay as Client
+            // Connect to relay as Client (with retry logic)
             info!("📡 Connecting to ZKS Relay...");
-            let relay = P2PRelay::connect(
-                &self.config.relay_url,
-                &self.config.vernam_url,
-                &self.config.room_id,
-                PeerRole::Client,
-                self.config.proxy.clone(),
-            )
-            .await?;
+            let relay = match self.reconnect_with_backoff().await {
+                Ok(r) => r,
+                Err(e) => {
+                    // Reset state on failure
+                    let mut state = self.state.lock().await;
+                    *state = P2PVpnState::Disconnected;
+                    return Err(e);
+                }
+            };
 
-            let relay = Arc::new(relay);
+
             {
                 let mut relay_guard = self.relay.write().await;
                 *relay_guard = Some(relay.clone());
@@ -649,10 +650,13 @@ mod implementation {
                 }
 
                 info!(
-                    "🔄 Reconnecting in {}ms (attempt {}/{})",
-                    backoff,
+                    "🔄 Connecting to swarm... (attempt {}/{})",
                     attempt + 1,
-                    MAX_RECONNECT_ATTEMPTS
+                    if MAX_RECONNECT_ATTEMPTS == u32::MAX {
+                        "∞".to_string()
+                    } else {
+                        MAX_RECONNECT_ATTEMPTS.to_string()
+                    }
                 );
 
                 tokio::time::sleep(tokio::time::Duration::from_millis(backoff)).await;
