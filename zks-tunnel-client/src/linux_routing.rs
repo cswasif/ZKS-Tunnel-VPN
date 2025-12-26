@@ -98,3 +98,34 @@ pub async fn delete_default_route(gateway: Ipv4Addr) -> Result<()> {
     info!("✅ Deleted default route via {}", gateway);
     Ok(())
 }
+
+/// Get the default WAN interface name by parsing `ip route` output
+#[cfg(target_os = "linux")]
+pub fn get_default_interface() -> Option<String> {
+    use std::process::Command;
+    
+    // Run: ip route show default
+    let output = Command::new("ip")
+        .args(["route", "show", "default"])
+        .output()
+        .ok()?;
+    
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Example output: "default via 192.168.0.1 dev eth0 proto dhcp metric 100"
+    // We want to extract the interface name after "dev "
+    for line in stdout.lines() {
+        if line.starts_with("default") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            // Find "dev" and return the next word
+            for (i, part) in parts.iter().enumerate() {
+                if *part == "dev" && i + 1 < parts.len() {
+                    let interface = parts[i + 1].to_string();
+                    info!("🌐 Detected default WAN interface: {}", interface);
+                    return Some(interface);
+                }
+            }
+        }
+    }
+    
+    None
+}

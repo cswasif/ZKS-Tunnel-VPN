@@ -169,8 +169,20 @@ impl ExitService {
         // TODO: Forward to internet via TCP/UDP
         // TODO: Encrypt response and send back
 
+        // Look up session to get target peer ID
+        let target_peer = {
+            let sessions = self.sessions.read().await;
+            if let Some(session) = sessions.get(&packet.session_id) {
+                session.peer_id.clone()
+            } else {
+                warn!("Exit packet for unknown session: {}", packet.session_id);
+                return;
+            }
+        };
+
         // For now, just forward to traffic mixer
         let traffic_packet = crate::traffic_mixer::TrafficPacket::ExitTraffic {
+            target: target_peer,
             session_id: packet.session_id.clone(),
             data: packet.encrypted_data.clone(),
         };

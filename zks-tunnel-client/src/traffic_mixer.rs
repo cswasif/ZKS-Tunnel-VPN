@@ -23,13 +23,13 @@ const QUEUE_SIZE: usize = 1000;
 #[derive(Debug, Clone)]
 pub enum TrafficPacket {
     /// User's own VPN traffic
-    ClientTraffic { data: Bytes },
+    ClientTraffic { target: String, data: Bytes },
 
     /// Relayed traffic for another peer
     RelayTraffic { peer_id: String, data: Bytes },
 
     /// Exit traffic (decrypted and forwarded to internet)
-    ExitTraffic { session_id: String, data: Bytes },
+    ExitTraffic { target: String, session_id: String, data: Bytes },
 
     /// Dummy padding packet for constant-rate padding
     Padding { size: usize },
@@ -70,7 +70,7 @@ pub struct TrafficMixer {
     exit_rx: mpsc::Receiver<TrafficPacket>,
 
     /// Send channel for mixed output
-    output_tx: mpsc::Sender<Bytes>,
+    output_tx: mpsc::Sender<TrafficPacket>,
 
     /// Configuration
     config: TrafficMixerConfig,
@@ -85,7 +85,7 @@ impl TrafficMixer {
         client_rx: mpsc::Receiver<TrafficPacket>,
         relay_rx: mpsc::Receiver<TrafficPacket>,
         exit_rx: mpsc::Receiver<TrafficPacket>,
-        output_tx: mpsc::Sender<Bytes>,
+        output_tx: mpsc::Sender<TrafficPacket>,
         config: TrafficMixerConfig,
     ) -> Self {
         let padding_interval = if config.enable_padding && config.padding_rate_pps > 0 {
@@ -157,14 +157,14 @@ impl TrafficMixer {
 
     /// Process a traffic packet and forward to output
     async fn process_packet(&mut self, packet: TrafficPacket, source: &str) {
-        let data = match packet {
-            TrafficPacket::ClientTraffic { data } => {
+        match &packet {
+            TrafficPacket::ClientTraffic { target, data } => {
                 debug!(
-                    "[{}] Forwarding client packet ({} bytes)",
+                    "[{}] Forwarding client packet to {} ({} bytes)",
                     source,
+                    target,
                     data.len()
                 );
-                data
             }
             TrafficPacket::RelayTraffic { peer_id, data } => {
                 debug!(
@@ -173,25 +173,23 @@ impl TrafficMixer {
                     peer_id,
                     data.len()
                 );
-                data
             }
-            TrafficPacket::ExitTraffic { session_id, data } => {
+            TrafficPacket::ExitTraffic { target, session_id, data } => {
                 debug!(
-                    "[{}] Forwarding exit packet for session {} ({} bytes)",
+                    "[{}] Forwarding exit packet to {} for session {} ({} bytes)",
                     source,
+                    target,
                     session_id,
                     data.len()
                 );
-                data
             }
             TrafficPacket::Padding { size } => {
                 debug!("[{}] Sending padding packet ({} bytes)", source, size);
-                Bytes::from(vec![0u8; size])
             }
-        };
+        }
 
         // Send to mixed output stream
-        if let Err(e) = self.output_tx.send(data).await {
+        if let Err(e) = self.output_tx.send(packet).await {
             warn!("Failed to send mixed packet: {}", e);
         }
     }
@@ -206,7 +204,7 @@ impl TrafficMixer {
 }
 
 /// Create traffic mixer channels
-pub fn create_channels() -> (TrafficMixerChannels, mpsc::Receiver<Bytes>) {
+pub fn create_channels() -> (TrafficMixerChannels, mpsc::Receiver<TrafficPacket>) {
     let (client_tx, client_rx) = mpsc::channel(QUEUE_SIZE);
     let (relay_tx, relay_rx) = mpsc::channel(QUEUE_SIZE);
     let (exit_tx, exit_rx) = mpsc::channel(QUEUE_SIZE);
@@ -246,7 +244,7 @@ pub struct TrafficMixerChannels {
     exit_rx: mpsc::Receiver<TrafficPacket>,
 
     /// Internal: output sender
-    output_tx: mpsc::Sender<Bytes>,
+    output_tx: mpsc::Sender<TrafficPacket>,
 }
 
 impl TrafficMixerChannels {
@@ -284,6 +282,7 @@ mod tests {
 
         client_tx
             .send(TrafficPacket::ClientTraffic {
+                target: "exit_node".to_string(),
                 data: Bytes::from("client data"),
             })
             .await
@@ -301,7 +300,20 @@ mod tests {
         let packet1 = output_rx.recv().await.unwrap();
         let packet2 = output_rx.recv().await.unwrap();
 
-        assert!(!packet1.is_empty());
-        assert!(!packet2.is_empty());
+        // Verify packets (order not guaranteed due to async)
+        let verify_packet = |p: TrafficPacket| match p {
+            TrafficPacket::ClientTraffic { target, data } => {
+                assert_eq!(target, "exit_node");
+                assert_eq!(data, "client data");
+            }
+            TrafficPacket::RelayTraffic { peer_id, data } => {
+                assert_eq!(peer_id, "peer1");
+                assert_eq!(data, "relay data");
+            }
+            _ => panic!("Unexpected packet type"),
+        };
+
+        verify_packet(packet1);
+        verify_packet(packet2);
     }
 }

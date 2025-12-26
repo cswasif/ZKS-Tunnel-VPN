@@ -64,7 +64,7 @@ impl Default for SwarmControllerConfig {
             vernam_url: "https://zks-key.md-wasif-faisal.workers.dev/entropy".to_string(),
             exit_consent_given: false,
             vpn_address: "10.0.85.1".to_string(),
-            server_mode: false,
+            server_mode: false, // Role-based routing handled by p2p_vpn.rs
         }
     }
 }
@@ -103,6 +103,9 @@ pub struct SwarmController {
     /// Routing table for Exit Node (Client IP -> Relay Sender)
     routes: Arc<RwLock<HashMap<Ipv4Addr, mpsc::Sender<TunnelMessage>>>>,
 
+    /// Shared P2PRelay connection (single connection for all services)
+    shared_relay: Option<Arc<crate::p2p_relay::P2PRelay>>,
+
     /// Shutdown signal
     shutdown_tx: Option<mpsc::Sender<()>>,
     shutdown_rx: Arc<Mutex<Option<mpsc::Receiver<()>>>>,
@@ -118,6 +121,7 @@ impl SwarmController {
             entropy_tax: Arc::new(Mutex::new(EntropyTax::new())),
             config,
             routes: Arc::new(RwLock::new(HashMap::new())),
+            shared_relay: None,
             shutdown_tx: None,
             shutdown_rx: Arc::new(Mutex::new(None)),
         }
@@ -145,7 +149,19 @@ impl SwarmController {
         self.shutdown_tx = Some(shutdown_tx);
         *self.shutdown_rx.lock().await = Some(shutdown_rx);
 
-        // Start VPN client service
+        // Establish single shared P2PRelay connection for all services
+        info!("🔗 Establishing shared P2PRelay connection...");
+        let relay = crate::p2p_relay::P2PRelay::connect(
+            &self.config.relay_url,
+            &self.config.vernam_url,
+            &self.config.room_id,
+            crate::p2p_relay::PeerRole::Swarm,
+            None,
+        )
+        .await?;
+        self.shared_relay = Some(relay.clone());
+        info!("✅ Shared P2PRelay connection established");
+
         // Start VPN client service
         println!(
             "🔥 DEBUG: Checking enable_client: {}",
@@ -218,6 +234,15 @@ impl SwarmController {
             };
 
             let controller = P2PVpnController::new(config, self.entropy_tax.clone());
+            
+            // CRITICAL FIX: Pass shared_relay to VPN client to prevent duplicate key exchange
+            if let Some(relay) = &self.shared_relay {
+                info!("🔗 Passing shared P2PRelay to VPN client (single key exchange)");
+                controller.set_shared_relay(relay.clone()).await;
+            } else {
+                warn!("⚠️ No shared relay available - VPN client will create its own connection");
+            }
+            
             self.vpn_client = Some(Arc::new(Mutex::new(controller)));
 
             // Start VPN in background
@@ -278,158 +303,131 @@ impl SwarmController {
             exit_service.run().await;
         });
 
-        // Start Exit Relay (Network Connection)
-        let relay_url = self.config.relay_url.clone();
-        let vernam_url = self.config.vernam_url.clone();
-        let room_id = self.config.room_id.clone();
+
+        // Use the shared relay connection instead of creating a new one
+        let relay = self.shared_relay.as_ref()
+            .ok_or("Shared relay not initialized")?
+            .clone();
+        
         let vpn_client = self.vpn_client.clone();
         let server_mode = self.config.server_mode;
         let routes = self.routes.clone();
         let entropy_tax = self.entropy_tax.clone();
 
         tokio::spawn(async move {
-            loop {
-                info!("🌍 Exit Service waiting for client connection...");
-                match crate::p2p_relay::P2PRelay::connect(
-                    &relay_url,
-                    &vernam_url,
-                    &room_id,
-                    crate::p2p_relay::PeerRole::Swarm,
-                    None,
-                )
-                .await
-                {
-                    Ok(relay) => {
-                        info!("🌍 Exit Service CONNECTED to a client!");
-                        // relay is already Arc<P2PRelay>
+            info!("🌍 Exit Service starting with shared relay connection...");
 
-                        // If in Server Mode, setup bidirectional forwarding with TUN
-                        if let (true, Some(client)) = (server_mode, vpn_client.as_ref()) {
-                            let client = client.clone();
-                            let relay = relay.clone();
-                            let routes = routes.clone();
-                            let entropy_tax_handler = entropy_tax.clone();
+            // If in Server Mode, setup bidirectional forwarding with TUN
+            if let (true, Some(client)) = (server_mode, vpn_client.as_ref()) {
+                let client = client.clone();
+                let routes = routes.clone();
+                let entropy_tax_handler = entropy_tax.clone();
 
-                            // Handle this client connection to completion
-                            // This prevents the loop from immediately reconnecting and kicking this session
-                            let client_handler = tokio::spawn(async move {
-                                // Create channel for sending TO this client (used by Outbound Router)
-                                let (client_tx, mut client_rx) = mpsc::channel(1000);
-                                let relay_send = relay.clone();
-                                let entropy_tax_send = entropy_tax_handler.clone();
+                // Create channel for sending TO clients (used by Outbound Router)
+                let (client_tx, mut client_rx) = mpsc::channel(1000);
+                let relay_send = relay.clone();
+                let entropy_tax_send = entropy_tax_handler.clone();
 
-                                // Task: Rx from Channel -> Relay (Outbound from TUN)
-                                let _outbound_task = tokio::spawn(async move {
-                                    while let Some(msg) = client_rx.recv().await {
-                                        let msg_len =
-                                            if let TunnelMessage::IpPacket { payload } = &msg {
-                                                payload.len()
-                                            } else {
-                                                0
-                                            };
+                // Task: Rx from Channel -> Relay (Outbound from TUN)
+                let _outbound_task = tokio::spawn(async move {
+                    while let Some(msg) = client_rx.recv().await {
+                        let msg_len =
+                            if let TunnelMessage::IpPacket { payload } = &msg {
+                                payload.len()
+                            } else {
+                                0
+                            };
 
-                                        if let Err(e) = relay_send.send(&msg).await {
-                                            warn!("Failed to send to client relay: {}", e);
-                                            break;
-                                        }
+                        if let Err(e) = relay_send.send(&msg).await {
+                            warn!("Failed to send to relay: {}", e);
+                            break;
+                        }
 
-                                        if msg_len > 0 {
-                                            entropy_tax_send
-                                                .lock()
-                                                .await
-                                                .earn_tokens(msg_len as u64);
-                                        }
-                                    }
-                                });
-
-                                // Task: Rx from Relay -> TUN (Inbound to Exit)
-                                while let Ok(msg) = relay.recv().await {
-                                    if let Some(msg) = msg {
-                                        match msg {
-                                            TunnelMessage::IpPacket { payload } => {
-                                                // 1. Learn Source IP
-                                                if payload.len() >= 20 {
-                                                    let src_ip = Ipv4Addr::new(
-                                                        payload[12],
-                                                        payload[13],
-                                                        payload[14],
-                                                        payload[15],
-                                                    );
-
-                                                    // Update routing table
-                                                    {
-                                                        let mut r: tokio::sync::RwLockWriteGuard<
-                                                            '_,
-                                                            HashMap<
-                                                                Ipv4Addr,
-                                                                mpsc::Sender<TunnelMessage>,
-                                                            >,
-                                                        > = routes.write().await;
-                                                        r.entry(src_ip).or_insert_with(|| {
-                                                            info!(
-                                                                "🆕 Learned route: {} -> Client",
-                                                                src_ip
-                                                            );
-                                                            client_tx.clone()
-                                                        });
-                                                    }
-                                                }
-
-                                                // 2. Inject into TUN
-                                                let payload_len = payload.len();
-                                                client
-                                                    .lock()
-                                                    .await
-                                                    .inject_packet(payload.to_vec())
-                                                    .await;
-
-                                                // 3. Earn tokens
-                                                entropy_tax_handler
-                                                    .lock()
-                                                    .await
-                                                    .earn_tokens(payload_len as u64);
-                                            }
-                                            _ => {
-                                                debug!(
-                                                    "Exit Service received non-IP message: {:?}",
-                                                    msg
-                                                );
-                                            }
-                                        }
-                                    } else {
-                                        break; // Connection closed
-                                    }
-                                }
-
-                                // Cleanup route?
-                                // Ideally yes, but we don't know which IP unless we stored it.
-                                // For now, let it stale.
-                                warn!("Client disconnected");
-                            });
-
-                            // Wait for this client to finish before accepting next one
-                            let _ = client_handler.await;
-                        } else {
-                            // Legacy/Placeholder mode (just keep alive)
-                            tokio::spawn(async move {
-                                while let Ok(_msg) = relay.recv().await {
-                                    // TODO: Forward to ExitService (SOCKS/HTTP)
-                                }
-                            });
+                        if msg_len > 0 {
+                            entropy_tax_send
+                                .lock()
+                                .await
+                                .earn_tokens(msg_len as u64);
                         }
                     }
-                    Err(e) => {
-                        // Don't log "timeout" as error, it's normal waiting
-                        if e.to_string().contains("AuthInit timeout") {
-                            debug!("🌍 Exit Service: No client connected (timeout), retrying...");
-                        } else {
-                            warn!("Exit Service connect error: {}. Retrying...", e);
+                });
+
+                // Task: Rx from Relay -> TUN (Inbound to Exit)
+                loop {
+                    match relay.recv().await {
+                        Ok(Some(msg)) => {
+                            match msg {
+                                TunnelMessage::IpPacket { payload } => {
+                                    // 1. Learn Source IP
+                                    if payload.len() >= 20 {
+                                        let src_ip = Ipv4Addr::new(
+                                            payload[12],
+                                            payload[13],
+                                            payload[14],
+                                            payload[15],
+                                        );
+
+                                        // Update routing table
+                                        {
+                                            let mut r = routes.write().await;
+                                            r.entry(src_ip).or_insert_with(|| {
+                                                info!(
+                                                    "🆕 Learned route: {} -> Client",
+                                                    src_ip
+                                                );
+                                                client_tx.clone()
+                                            });
+                                        }
+                                    }
+
+                                    // 2. Inject into TUN
+                                    let payload_len = payload.len();
+                                    client
+                                        .lock()
+                                        .await
+                                        .inject_packet(payload.to_vec())
+                                        .await;
+
+                                    // 3. Earn tokens
+                                    entropy_tax_handler
+                                        .lock()
+                                        .await
+                                        .earn_tokens(payload_len as u64);
+                                }
+                                _ => {
+                                    debug!(
+                                        "Exit Service received non-IP message: {:?}",
+                                        msg
+                                    );
+                                }
+                            }
                         }
-                        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                        Ok(None) => {
+                            warn!("Exit Service: Connection closed");
+                            break;
+                        }
+                        Err(e) => {
+                            warn!("Exit Service recv error: {}", e);
+                            break;
+                        }
+                    }
+                }
+            } else {
+                // Legacy/Placeholder mode (just keep alive)
+                loop {
+                    match relay.recv().await {
+                        Ok(Some(_msg)) => {
+                            // TODO: Forward to ExitService (SOCKS/HTTP)
+                        }
+                        Ok(None) => break,
+                        Err(_) => break,
                     }
                 }
             }
+
+            warn!("Exit Service stopped");
         });
+
 
         // Spawn Outbound Router (TUN -> Clients)
         // Only one router needed for all clients
@@ -483,7 +481,7 @@ impl SwarmController {
     async fn start_traffic_mixer(
         &mut self,
         mixer_channels: TrafficMixerChannels,
-        mut output_rx: mpsc::Receiver<bytes::Bytes>,
+        mut output_rx: mpsc::Receiver<crate::traffic_mixer::TrafficPacket>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Create mixer with configuration
         let config = TrafficMixerConfig {

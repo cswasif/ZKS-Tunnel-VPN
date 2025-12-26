@@ -259,14 +259,27 @@ impl KeyExchange {
                 let peer_pk_bytes_res = hex::decode(peer_eph_pk_hex);
                 
                 if let Ok(peer_pk_bytes) = peer_pk_bytes_res {
+                    if our_pk_bytes.as_slice() == peer_pk_bytes.as_slice() {
+                        return Err("Ignored self-message (AuthInit echo)");
+                    }
                     if our_pk_bytes.as_slice() > peer_pk_bytes.as_slice() {
                         // We win the tie-breaker. Ignore their AuthInit.
                         // They will receive our AuthInit and yield (since their PK < ours).
                         return Err("Collision detected: We are Initiator (winner) - ignoring peer AuthInit");
                     } else {
                         // We lose the tie-breaker. Yield to peer.
-                        // Reset state to Init to allow transition to Responder
+                        // CRITICAL: Clear ALL ephemeral state from our Initiator attempt
+                        // and regenerate fresh keys for our new Responder role
                         self.state = KeyExchangeState::Init;
+                        self.ephemeral_secret = None;
+                        self.ephemeral_public = None;
+                        self.peer_ephemeral_public = None;
+                        
+                        // Generate fresh ephemeral keys for Responder role
+                        let secret = EphemeralSecret::random_from_rng(OsRng);
+                        let public = PublicKey::from(&secret);
+                        self.ephemeral_secret = Some(secret);
+                        self.ephemeral_public = Some(public);
                     }
                 }
             }
@@ -410,6 +423,11 @@ impl KeyExchange {
         &mut self,
         auth_response: &KeyExchangeMessage,
     ) -> Result<KeyExchangeMessage, &'static str> {
+        // Verify state
+        if self.state != KeyExchangeState::InitiatorWaitingForResponse {
+             return Err("Ignored: Unexpected AuthResponse - not in Initiator state");
+        }
+
         let (peer_eph_pk_hex, auth_mac_hex, kyber_ct_hex) = match auth_response {
             KeyExchangeMessage::AuthResponse {
                 ephemeral_pk,

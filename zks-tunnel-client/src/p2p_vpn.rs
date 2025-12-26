@@ -181,6 +181,8 @@ mod implementation {
         tx: mpsc::Sender<Bytes>,
     }
 
+    use crate::exit_forwarder::ExitForwarder;
+
     /// P2P VPN Controller - Routes all system traffic through Exit Peer
     pub struct P2PVpnController {
         config: P2PVpnConfig,
@@ -201,11 +203,20 @@ mod implementation {
         entropy_tax: Arc<Mutex<EntropyTax>>,
         inject_tx: Arc<RwLock<Option<mpsc::Sender<Vec<u8>>>>>,
         outbound_tx: Arc<RwLock<Option<mpsc::Sender<Vec<u8>>>>>,
+        
+        /// Exit Forwarder for handling internet traffic (Symmetric Swarm)
+        exit_forwarder: Arc<ExitForwarder>,
+        /// Receiver for exit traffic responses (to be sent back to peers)
+        exit_response_rx: Arc<Mutex<Option<mpsc::Receiver<Vec<u8>>>>>,
     }
 
     impl P2PVpnController {
         /// Create a new P2P VPN controller
         pub fn new(config: P2PVpnConfig, entropy_tax: Arc<Mutex<EntropyTax>>) -> Self {
+            // Initialize Exit Forwarder
+            let (tx, rx) = mpsc::channel(1000);
+            let exit_forwarder = Arc::new(ExitForwarder::new(config.address, tx));
+
             Self {
                 config,
                 state: Arc::new(Mutex::new(P2PVpnState::Disconnected)),
@@ -225,6 +236,8 @@ mod implementation {
                 entropy_tax,
                 inject_tx: Arc::new(RwLock::new(None)),
                 outbound_tx: Arc::new(RwLock::new(None)),
+                exit_forwarder,
+                exit_response_rx: Arc::new(Mutex::new(Some(rx))),
             }
         }
 
@@ -244,6 +257,19 @@ mod implementation {
             }
         }
 
+        /// Set a shared relay connection (used by SwarmController)
+        /// This prevents duplicate connections and ensures all services use same encryption keys
+        pub async fn set_shared_relay(&self, relay: Arc<P2PRelay>) {
+            info!("📡 Using shared P2PRelay connection (no duplicate key exchange)");
+            let mut relay_guard = self.relay.write().await;
+            *relay_guard = Some(relay);
+        }
+
+        /// Check if a shared relay is already set
+        pub async fn has_shared_relay(&self) -> bool {
+            self.relay.read().await.is_some()
+        }
+
         /// Start the VPN (connect to Exit Peer, create TUN device, begin routing)
         pub async fn start(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let mut state = self.state.lock().await;
@@ -259,24 +285,32 @@ mod implementation {
             info!("  Device: {}", self.config.device_name);
             info!("  Address: {}/{}", self.config.address, self.config.netmask);
 
-            // Connect to relay as Client (with retry logic)
-            info!("📡 Connecting to ZKS Relay...");
-            let relay = match self.reconnect_with_backoff().await {
-                Ok(r) => r,
-                Err(e) => {
-                    // Reset state on failure
-                    let mut state = self.state.lock().await;
-                    *state = P2PVpnState::Disconnected;
-                    return Err(e);
+            // Check if we already have a shared relay (set by SwarmController)
+            let relay = {
+                let existing = self.relay.read().await;
+                if existing.is_some() {
+                    info!("✅ Using shared relay connection (no duplicate key exchange)");
+                    existing.clone().unwrap()
+                } else {
+                    drop(existing);
+                    // Connect to relay as Client (with retry logic)
+                    info!("📡 Connecting to ZKS Relay...");
+                    match self.reconnect_with_backoff().await {
+                        Ok(r) => {
+                            let mut relay_guard = self.relay.write().await;
+                            *relay_guard = Some(r.clone());
+                            r
+                        },
+                        Err(e) => {
+                            // Reset state on failure
+                            let mut state = self.state.lock().await;
+                            *state = P2PVpnState::Disconnected;
+                            return Err(e);
+                        }
+                    }
                 }
             };
-            info!("🔍 DEBUG: reconnect_with_backoff() returned successfully");
-
-            {
-                let mut relay_guard = self.relay.write().await;
-                *relay_guard = Some(relay.clone());
-            }
-            info!("🔍 DEBUG: Relay stored in shared state");
+            info!("🔍 DEBUG: Relay ready for use");
 
             // Update state - waiting for Exit Peer
             {
@@ -329,6 +363,39 @@ mod implementation {
                     info!("✅ Kill Switch enabled");
                 }
             }
+
+            // Spawn Exit Forwarder response handler (Symmetric Swarm)
+            let exit_response_rx_mutex = self.exit_response_rx.clone();
+            let relay_lock = self.relay.clone();
+            let running = self.running.clone();
+            
+            tokio::spawn(async move {
+                let mut rx_guard = exit_response_rx_mutex.lock().await;
+                if let Some(mut rx) = rx_guard.take() {
+                    info!("📡 Starting Exit Forwarder response handler");
+                    while running.load(Ordering::SeqCst) {
+                        if let Some(packet) = rx.recv().await {
+                            // Send back to peer via relay
+                            let relay_opt = relay_lock.read().await;
+                            if let Some(relay) = relay_opt.as_ref() {
+                                // We need to wrap this in TunnelMessage::IpPacket
+                                let msg = TunnelMessage::IpPacket {
+                                    payload: bytes::Bytes::from(packet),
+                                };
+                                if let Err(e) = relay.send(&msg).await {
+                                    warn!("Failed to send exit response to peer: {}", e);
+                                }
+                            } else {
+                                warn!("Cannot send exit response: Relay not connected");
+                            }
+                        } else {
+                            break; // Channel closed
+                        }
+                    }
+                    info!("🛑 Exit Forwarder response handler stopped");
+                }
+            });
+
             // Create TUN device and start packet processing
             info!("🔍 DEBUG: About to call run_tun_loop()");
             self.run_tun_loop(relay).await?;
@@ -353,6 +420,7 @@ mod implementation {
             stats: Arc<Mutex<P2PVpnStats>>,
             running: Arc<AtomicBool>,
             device_writer: Option<TunDeviceWriter>,
+            exit_forwarder: Arc<ExitForwarder>,
         ) {
             while running.load(Ordering::SeqCst) {
                 match relay.recv().await {
@@ -405,14 +473,30 @@ mod implementation {
                             }
                         }
                         TunnelMessage::IpPacket { payload } => {
-                            if let Some(writer) = &device_writer {
-                                debug!("Received IpPacket: {} bytes", payload.len());
-                                if let Err(e) = writer.send(&payload).await {
-                                    warn!("Failed to write to TUN: {}", e);
-                                } else {
+                            // Try to forward as exit traffic first (via persistent ExitForwarder)
+                            match exit_forwarder.forward_to_internet(&payload).await {
+                                Ok(true) => {
+                                    // Handled as exit traffic
+                                    debug!("Exit traffic forwarded: {} bytes", payload.len());
                                     let mut s = stats.lock().await;
                                     s.bytes_received += payload.len() as u64;
                                     s.packets_received += 1;
+                                }
+                                Ok(false) => {
+                                    // Not exit traffic, try local delivery (TUN)
+                                    if let Some(writer) = &device_writer {
+                                        debug!("Local delivery IpPacket: {} bytes", payload.len());
+                                        if let Err(e) = writer.send(&payload).await {
+                                            warn!("Failed to write to TUN: {}", e);
+                                        } else {
+                                            let mut s = stats.lock().await;
+                                            s.bytes_received += payload.len() as u64;
+                                            s.packets_received += 1;
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("Error forwarding exit packet: {}", e);
                                 }
                             }
                         }
@@ -448,6 +532,8 @@ mod implementation {
                 }
             }
         }
+
+
 
         /// Stop the VPN
         pub async fn stop(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -798,6 +884,34 @@ mod implementation {
                     }
                 };
 
+                // Wrap device in Arc for sharing between tasks
+                let device = Arc::new(device);
+                let device_writer = TunDeviceWriter::TunRs(device.clone());
+
+                // Spawn message handler BEFORE waiting for key exchange to avoid deadlock
+                let streams = self.streams.clone();
+                let dns_pending = self.dns_pending.clone();
+                let dns_response_tx = self.dns_response_tx.clone();
+                let stats_clone = self.stats.clone();
+                let running_handler = self.running.clone();
+                let device_writer_clone = device_writer.clone();
+                let relay_for_recv = relay.clone();
+                let exit_forwarder = self.exit_forwarder.clone();
+
+                tokio::spawn(async move {
+                    Self::handle_relay_messages(
+                        relay_for_recv,
+                        streams,
+                        dns_pending,
+                        dns_response_tx,
+                        stats_clone,
+                        running_handler,
+                        Some(device_writer_clone),
+                        exit_forwarder,
+                    )
+                    .await;
+                });
+
                 // Set up routing or forwarding
                 #[cfg(target_os = "windows")]
                 {
@@ -823,39 +937,80 @@ mod implementation {
                     if tun_if_index != 0 {
                         info!("TUN interface index: {}", tun_if_index);
 
-                        if self.config.server_mode {
+                        // Role-based routing for Faisal Swarm:
+                        // - Swarm: Acts as BOTH Client + Exit (enable IP forwarding AND add routes)
+                        // - ExitPeer: Only Exit (enable IP forwarding, skip routes)
+                        // - Client: Only Client (add routes, skip IP forwarding)
+                        let is_swarm = matches!(self.config.role, PeerRole::Swarm);
+                        let acts_as_exit = self.config.server_mode || is_swarm;
+                        let acts_as_client = !self.config.server_mode; // Server mode NEVER adds routes
+
+                        if acts_as_exit {
                             // Exit Node needs IP forwarding enabled on the TUN interface
                             if let Err(e) = windows_routing::enable_ip_forwarding(tun_if_index) {
                                 warn!("Failed to enable IP forwarding: {}", e);
+                            } else {
+                                info!("✅ IP forwarding enabled (Exit role)");
                             }
                         }
-                    }
+                        // Windows swarm nodes ADD routes (they're clients to Linux exits)
+                        let should_add_routes = acts_as_client && (is_swarm || !self.config.server_mode);
 
-                    if !self.config.server_mode && tun_if_index != 0 {
-                        info!("Setting up routes to capture traffic...");
+                        if should_add_routes {
+                        // CRITICAL: Wait for key exchange to complete before adding routes
+                        // Otherwise traffic flows through TUN before encryption is ready
+                        info!("⏳ Waiting for key exchange to complete before adding routes...");
+                        if let Err(e) = relay.wait_for_key_exchange(30).await {
+                            error!("❌ {}", e);
+                            return Err(e.into());
+                        }
+
+                        info!("Setting up routes to capture traffic (Client role)...");
 
                         // Get the relay host to exclude from VPN routing (avoid circular routing)
                         let relay_host = url::Url::parse(&self.config.relay_url)
                             .ok()
                             .and_then(|u| u.host_str().map(|s| s.to_string()));
 
-                        // Get the current default gateway (for relay host route)
-                        let gateway_output = Command::new("powershell")
+                        // Get the current default gateway and WAN interface index
+                        let default_route_info = Command::new("powershell")
                             .args([
                                 "-Command",
-                                "(Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Select-Object -First 1).NextHop",
+                                "Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Select-Object -First 1 -Property NextHop,InterfaceIndex | ConvertTo-Json",
                             ])
                             .output();
 
-                        let original_gateway = gateway_output.ok().and_then(|o| {
-                            String::from_utf8_lossy(&o.stdout)
-                                .trim()
-                                .parse::<std::net::Ipv4Addr>()
+                        let (original_gateway, wan_if_index) = default_route_info.ok().and_then(|o| {
+                            let json_str = String::from_utf8_lossy(&o.stdout);
+                            // Parse JSON: {"NextHop":"192.168.0.1","InterfaceIndex":10}
+                            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                                let gw = value["NextHop"].as_str()?.parse::<std::net::Ipv4Addr>().ok()?;
+                                let if_idx = value["InterfaceIndex"].as_u64()? as u32;
+                                Some((gw, if_idx))
+                            } else {
+                                None
+                            }
+                        }).unwrap_or_else(|| {
+                            warn!("Failed to get default route info, using fallback");
+                            // Fallback to old method
+                            let gw_output = Command::new("powershell")
+                                .args([
+                                    "-Command",
+                                    "(Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Select-Object -First 1).NextHop",
+                                ])
+                                .output()
                                 .ok()
+                                .and_then(|o| {
+                                    String::from_utf8_lossy(&o.stdout)
+                                        .trim()
+                                        .parse::<std::net::Ipv4Addr>()
+                                        .ok()
+                                });
+                            (gw_output.unwrap_or(Ipv4Addr::new(192, 168, 0, 1)), 0) // 0 means use any interface
                         });
 
                         // If we have a relay host, add a specific route through original gateway first
-                        if let (Some(host), Some(orig_gw)) = (&relay_host, original_gateway) {
+                        if let Some(host) = &relay_host {
                             info!("Adding direct route for relay host: {}", host);
                             // Resolve hostname to IP
                             if let Ok(addrs) =
@@ -864,19 +1019,20 @@ mod implementation {
                                 for addr in addrs {
                                     if let std::net::SocketAddr::V4(v4) = addr {
                                         let relay_ip = *v4.ip();
-                                        // Use Win32 API to add relay route
+                                        // Use Win32 API to add relay route with WAN interface
+                                        let route_if_index = if wan_if_index > 0 { wan_if_index } else { tun_if_index };
                                         if let Err(e) = windows_routing::add_route(
                                             relay_ip,
                                             Ipv4Addr::new(255, 255, 255, 255), // /32 mask
-                                            orig_gw,
-                                            tun_if_index,
+                                            original_gateway,
+                                            route_if_index,  // Use WAN interface, not TUN!
                                             1, // metric
                                         ) {
                                             warn!("Failed to add relay route via Win32 API: {}", e);
                                         } else {
                                             info!(
-                                                "✅ Added relay route: {} via {} (Win32 API)",
-                                                relay_ip, orig_gw
+                                                "✅ Added relay route: {} via {} on WAN IF:{} (Win32 API)",
+                                                relay_ip, original_gateway, route_if_index
                                             );
                                         }
                                         break;
@@ -975,10 +1131,11 @@ mod implementation {
                         info!("✅ All VPN routes configured - traffic will go via VPN");
                     } else if self.config.server_mode {
                         info!("Server Mode: Skipping client routing configuration (Forwarding enabled)");
-                    } else {
-                        warn!("Skipping routing configuration: TUN interface index not found");
                     }
+                } else {
+                    warn!("Skipping routing configuration: TUN interface index not found");
                 }
+            }
 
                 // Enable DNS leak protection if configured
                 if self.config.dns_protection {
@@ -1006,7 +1163,7 @@ mod implementation {
 
                 // Use raw TUN packet forwarding (Layer 3 VPN mode)
                 // This bypasses netstack and sends raw IP packets to Exit Peer
-                self.run_tun_raw(device, relay).await?;
+                self.run_tun_raw(device, device_writer, relay).await?;
                 Ok(())
             }
 
@@ -1091,8 +1248,16 @@ mod implementation {
             }
 
             // Setup routing (Linux specific)
-            if self.config.server_mode {
-                info!("Server Mode: Skipping default route setup. Enabling NAT...");
+            // Role-based routing for Faisal Swarm:
+            // - Swarm: Acts as BOTH Client + Exit (enable NAT AND add routes)
+            // - ExitPeer: Only Exit (enable NAT, skip routes)
+            // - Client: Only Client (add routes, skip NAT)
+            let is_swarm = matches!(self.config.role, PeerRole::Swarm);
+            let acts_as_exit = self.config.server_mode || is_swarm;
+            let acts_as_client = !self.config.server_mode; // Server mode NEVER adds client routes
+
+            if acts_as_exit {
+                info!("Exit Role: Enabling NAT for peer traffic...");
                 // Enable IP forwarding
                 let _ = std::process::Command::new("sysctl")
                     .args(["-w", "net.ipv4.ip_forward=1"])
@@ -1110,14 +1275,85 @@ mod implementation {
                         "MASQUERADE",
                     ])
                     .output();
-                info!("✅ NAT Masquerade enabled for 10.0.85.0/24");
-            } else {
-                info!("Setting up routes to capture traffic...");
+                info!("✅ NAT Masquerade enabled for 10.0.85.0/24 (Exit role)");
+                
+                // Also enable MASQUERADE for all outbound traffic (for TCP/ICMP exit)
+                // Detect the default WAN interface dynamically
+                let wan_interface = linux_routing::get_default_interface()
+                    .unwrap_or_else(|| "eth0".to_string()); // Fallback to eth0
+                
+                let _ = std::process::Command::new("iptables")
+                    .args([
+                        "-t",
+                        "nat",
+                        "-A",
+                        "POSTROUTING",
+                        "-o",
+                        &wan_interface,
+                        "-j",
+                        "MASQUERADE",
+                    ])
+                    .output();
+                info!("✅ NAT Masquerade enabled for {} interface (Exit role)", wan_interface);
+            }
+
+            // Store device name before into_queues() consumes it
+            let device_name = device.name().to_string();
+
+            // Create queues and writer early so message handler can be spawned
+            let queues = device.into_queues();
+            let mut async_queues = Vec::new();
+            for q in queues {
+                q.set_nonblocking(true)?;
+                async_queues.push(Arc::new(AsyncFd::new(q)?));
+            }
+
+            // Use the first queue for writing
+            let writer = TunDeviceWriter::MultiQueue(async_queues[0].clone());
+
+            // Spawn handle_relay_messages BEFORE waiting for key exchange to avoid deadlock
+            let streams = self.streams.clone();
+            let dns_pending = self.dns_pending.clone();
+            let dns_response_tx = self.dns_response_tx.clone();
+            let stats_clone = self.stats.clone();
+            let running_handler = self.running.clone();
+            let device_writer_clone = writer.clone();
+            let relay_for_recv = relay.clone();
+            let exit_forwarder = self.exit_forwarder.clone();
+
+            tokio::spawn(async move {
+                Self::handle_relay_messages(
+                    relay_for_recv,
+                    streams,
+                    dns_pending,
+                    dns_response_tx,
+                    stats_clone,
+                    running_handler,
+                    Some(device_writer_clone),
+                    exit_forwarder,
+                )
+                .await;
+            });
+
+            // Route logic for Faisal Swarm:
+            // ALL nodes add routes uniformly - exit traffic is handled via socket (forward_exit_packet)
+            // not via TUN → routing table. So routes won't cause loops.
+            
+            if acts_as_client {
+                // CRITICAL: Wait for key exchange to complete before adding routes
+                // Otherwise traffic flows through TUN before encryption is ready
+                info!("⏳ Waiting for key exchange to complete before adding routes...");
+                if let Err(e) = relay.wait_for_key_exchange(30).await {
+                    error!("❌ {}", e);
+                    return Err(e.into());
+                }
+
+                info!("Client Role: Setting up routes to capture traffic...");
                 // Route via Exit Peer's VPN IP using rtnetlink API
                 let gateway = self.config.exit_peer_address;
 
-                // Get interface index using if_nametoindex
-                let interface_name_cstr = std::ffi::CString::new(device.name()).unwrap();
+                // Get interface index using the stored device name
+                let interface_name_cstr = std::ffi::CString::new(device_name.clone()).unwrap();
                 let interface_index = unsafe { libc::if_nametoindex(interface_name_cstr.as_ptr()) };
 
                 // Add default route via netlink
@@ -1152,7 +1388,7 @@ mod implementation {
                         let secure_dns =
                             vec!["1.1.1.1".parse().unwrap(), "1.0.0.1".parse().unwrap()];
 
-                        if let Err(e) = dns_guard.enable(device.name(), secure_dns).await {
+                        if let Err(e) = dns_guard.enable(&device_name, secure_dns).await {
                             error!("Failed to enable DNS leak protection: {}", e);
                         } else {
                             *guard = Some(dns_guard);
@@ -1165,40 +1401,10 @@ mod implementation {
                 }
             }
 
-            let queues = device.into_queues();
-            let mut async_queues = Vec::new();
-            for q in queues {
-                q.set_nonblocking(true)?;
-                async_queues.push(Arc::new(AsyncFd::new(q)?));
-            }
-
-            // Use the first queue for writing
-            let writer = TunDeviceWriter::MultiQueue(async_queues[0].clone());
-
             let running = self.running.clone();
             let stats = self.stats.clone();
 
-            // Spawn handle_relay_messages
-            let streams = self.streams.clone();
-            let dns_pending = self.dns_pending.clone();
-            let dns_response_tx = self.dns_response_tx.clone();
-            let stats_clone = stats.clone();
-            let running_handler = running.clone();
-            let device_writer_clone = writer.clone();
-            let relay_for_recv = relay.clone();
-
-            tokio::spawn(async move {
-                Self::handle_relay_messages(
-                    relay_for_recv,
-                    streams,
-                    dns_pending,
-                    dns_response_tx,
-                    stats_clone,
-                    running_handler,
-                    Some(device_writer_clone),
-                )
-                .await;
-            });
+            // NOTE: handle_relay_messages is now spawned earlier (before key exchange wait)
 
             // Spawn reader tasks for each queue
             for (i, q) in async_queues.into_iter().enumerate() {
@@ -1285,7 +1491,8 @@ mod implementation {
         #[allow(dead_code)]
         async fn run_tun_raw(
             &self,
-            device: tun_rs::AsyncDevice,
+            device: Arc<tun_rs::AsyncDevice>,
+            device_writer: TunDeviceWriter,
             relay: Arc<P2PRelay>,
         ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             info!("Starting raw TUN packet forwarding (Layer 3 VPN)...");
@@ -1296,14 +1503,10 @@ mod implementation {
             let stats = self.stats.clone();
             let entropy_tax = self.entropy_tax.clone();
 
-            // Wrap TUN device in Arc for sharing
-            let device = Arc::new(device);
             let device_reader = device.clone();
-            let device_writer = TunDeviceWriter::TunRs(device.clone()); // Used by handle_relay_messages
 
             // Clone relay for tasks
             let relay_for_send = relay.clone();
-            let relay_for_recv = relay.clone();
 
             // Setup injection channel
             let (inject_tx, mut inject_rx) = mpsc::channel(1000);
@@ -1328,26 +1531,8 @@ mod implementation {
                 }
             });
 
-            // Spawn the unified message handler (Relay -> TUN/Streams/DNS)
-            let streams = self.streams.clone();
-            let dns_pending = self.dns_pending.clone();
-            let dns_response_tx = self.dns_response_tx.clone();
-            let stats_clone = stats.clone();
-            let running_handler = running.clone();
-            let device_writer_clone = device_writer.clone();
-
-            tokio::spawn(async move {
-                Self::handle_relay_messages(
-                    relay_for_recv,
-                    streams,
-                    dns_pending,
-                    dns_response_tx,
-                    stats_clone,
-                    running_handler,
-                    Some(device_writer_clone),
-                )
-                .await;
-            });
+            // NOTE: handle_relay_messages is now spawned by the caller (run_tun_loop)
+            // BEFORE waiting for key exchange to avoid deadlock.
 
             // Task 1: TUN -> Relay (outbound packets to Exit Peer)
             let tun_to_relay = tokio::spawn(async move {
@@ -1438,6 +1623,7 @@ mod implementation {
             let stats = self.stats.clone();
             let running = self.running.clone();
             let relay_clone = relay.clone();
+            let exit_forwarder = self.exit_forwarder.clone();
 
             tokio::spawn(async move {
                 Self::handle_relay_messages(
@@ -1448,6 +1634,7 @@ mod implementation {
                     stats,
                     running,
                     None, // No direct TUN writing in netstack mode
+                    exit_forwarder,
                 )
                 .await;
             });
@@ -1748,3 +1935,63 @@ mod stub {
 #[cfg(not(feature = "vpn"))]
 #[allow(unused_imports)]
 pub use stub::*;
+
+/// Start P2P VPN controller
+#[cfg(feature = "vpn")]
+pub async fn start_p2p_vpn(
+    args: crate::cli::Args,
+    room_id: String,
+) -> Result<P2PVpnController, crate::utils::BoxError> {
+    use crate::entropy_tax::EntropyTax;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+    use tracing::info;
+
+    // Check for admin/root privileges
+    crate::utils::check_privileges()?;
+
+    let vpn_addr: std::net::Ipv4Addr = args
+        .vpn_address
+        .clone()
+        .unwrap_or("10.0.85.1".to_string())
+        .parse()?;
+
+    let config = P2PVpnConfig {
+        device_name: args.tun_name.clone(),
+        address: vpn_addr,
+        netmask: std::net::Ipv4Addr::new(255, 255, 255, 0),
+        mtu: 1500,
+        dns_protection: args.dns_protection,
+        kill_switch: args.kill_switch,
+        relay_url: args.relay.clone(),
+        vernam_url: args.vernam.clone(),
+        room_id,
+        proxy: args.proxy.clone(),
+
+        exit_peer_address: args.exit_peer_address.parse()?,
+        server_mode: args.server,
+        role: if args.server {
+            crate::p2p_relay::PeerRole::ExitPeer
+        } else {
+            crate::p2p_relay::PeerRole::Client
+        },
+    };
+
+    info!("🔒 Starting P2P VPN (Triple-Blind Architecture)...");
+    info!("   All traffic will be routed through the Exit Peer.");
+    info!("   Your IP is hidden behind the Exit Peer's IP.");
+
+    if args.kill_switch {
+        info!("   Kill switch: ENABLED (traffic blocked if VPN drops)");
+    }
+
+    if args.dns_protection {
+        info!("   DNS protection: ENABLED (queries via DoH)");
+    }
+
+    let entropy_tax = Arc::new(Mutex::new(EntropyTax::new()));
+    let vpn = P2PVpnController::new(config, entropy_tax);
+    vpn.start().await?;
+
+    Ok(vpn)
+}

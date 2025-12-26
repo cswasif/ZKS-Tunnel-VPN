@@ -982,7 +982,18 @@ impl P2PRelay {
                                     }
                                     Err(e) if e.contains("Collision detected") => {
                                         warn!("⚠️ Key Exchange Collision: {}", e);
-                                        // Do nothing, we are the winner and will wait for AuthResponse
+                                        // We are the winner - the other peer should yield to us.
+                                        // But since they may not have received our original AuthInit
+                                        // (we might have sent it before they joined), resend it now.
+                                        if let Ok(auth_init) = self.key_exchange.lock().await.create_auth_init() {
+                                            info!("🔄 Resending AuthInit (collision winner ensuring peer receives it)");
+                                            if let Err(e) = self.send_text(auth_init.to_json()).await {
+                                                warn!("Failed to resend AuthInit: {}", e);
+                                            }
+                                        }
+                                    }
+                                    Err(e) if e.contains("Ignored self-message") => {
+                                        debug!("Ignoring self-message");
                                     }
                                     Err(e) => {
                                         warn!("Failed to handle AuthInit: {}", e);
@@ -991,29 +1002,39 @@ impl P2PRelay {
                             }
                             KeyExchangeMessage::AuthResponse { .. } => {
                                 // Finalize handshake
-                                let (key_confirm, shared_secret) = {
+                                let result = {
                                     let mut ke = self.key_exchange.lock().await;
-                                    let confirm =
-                                        ke.process_auth_response_and_confirm(&ke_msg).map_err(
-                                            |e| format!("Failed to handle AuthResponse: {}", e),
-                                        )?;
-                                    let secret = ke
-                                        .get_shared_secret_bytes()
-                                        .ok_or("Failed to get shared secret")?;
-                                    (confirm, secret)
+                                    ke.process_auth_response_and_confirm(&ke_msg)
                                 };
+                                
+                                match result {
+                                    Ok(key_confirm) => {
+                                        let shared_secret = {
+                                            let ke = self.key_exchange.lock().await;
+                                            ke.get_shared_secret_bytes()
+                                                .ok_or("Failed to get shared secret")?
+                                        };
 
-                                // Update keys
-                                {
-                                    let mut k = self.keys.lock().await;
-                                    *k = WasifVernam::new(shared_secret, Vec::new());
+                                        // Update keys
+                                        {
+                                            let mut k = self.keys.lock().await;
+                                            *k = WasifVernam::new(shared_secret, Vec::new());
+                                        }
+                                        info!("✅ Key exchange successful (Initiator)!");
+                                        // Mark key exchange as complete
+                                        self.key_exchange_complete.store(true, Ordering::SeqCst);
+
+                                        // Send KeyConfirm
+                                        self.send_text(key_confirm.to_json()).await?;
+                                    }
+                                    Err(e) if e.starts_with("Ignored:") => {
+                                        debug!("⚠️ {}", e);
+                                        // Silently ignore duplicate AuthResponse
+                                    }
+                                    Err(e) => {
+                                        return Err(format!("Failed to handle AuthResponse: {}", e).into());
+                                    }
                                 }
-                                info!("✅ Key exchange successful (Initiator)!");
-                                // Mark key exchange as complete
-                                self.key_exchange_complete.store(true, Ordering::SeqCst);
-
-                                // Send KeyConfirm
-                                self.send_text(key_confirm.to_json()).await?;
                             }
                             KeyExchangeMessage::KeyConfirm { .. } => {
                                 // Finalize key exchange (Responder side)
