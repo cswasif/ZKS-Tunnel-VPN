@@ -484,7 +484,17 @@ impl VpnRoom {
         let target_role = match sender.role {
             PeerRole::Client => PeerRole::ExitPeer,
             PeerRole::ExitPeer => PeerRole::Client,
-            PeerRole::Swarm => return,
+            PeerRole::Swarm => {
+                // Swarm mode: Broadcast text messages (including key exchange) to all other swarm peers
+                for ws in self.state.get_websockets() {
+                    if let Ok(Some(session)) = ws.deserialize_attachment::<PeerSession>() {
+                        if session.role == PeerRole::Swarm && session.peer_id != sender.peer_id {
+                            let _ = ws.send_with_str(text);
+                        }
+                    }
+                }
+                return;
+            }
         };
 
         for ws in self.state.get_websockets() {
