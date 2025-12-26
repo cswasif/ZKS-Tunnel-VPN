@@ -53,6 +53,7 @@ pub enum KeyExchangeRole {
 
 /// Ephemeral key pair for authenticated X25519 key exchange
 #[allow(dead_code)]
+
 pub struct KeyExchange {
     /// Our role (initiator or responder)
     role: Option<KeyExchangeRole>,
@@ -92,6 +93,19 @@ pub struct KeyExchange {
     /// Kyber shared secret
     #[cfg(feature = "quantum")]
     kyber_shared_secret: Option<SharedKey<MlKem768>>,
+}
+
+
+impl std::fmt::Debug for KeyExchange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyExchange")
+            .field("role", &self.role)
+            .field("ephemeral_public", &self.ephemeral_public)
+            .field("peer_ephemeral_public", &self.peer_ephemeral_public)
+            .field("state", &self.state)
+            .field("room_id", &self.room_id)
+            .finish()
+    }
 }
 
 #[allow(dead_code)]
@@ -215,8 +229,6 @@ impl KeyExchange {
         &mut self,
         auth_init: &KeyExchangeMessage,
     ) -> Result<KeyExchangeMessage, &'static str> {
-        self.role = Some(KeyExchangeRole::Responder);
-
         let (peer_eph_pk_hex, identity_proof_hex, peer_timestamp, peer_kyber_pk_hex) =
             match auth_init {
                 KeyExchangeMessage::AuthInit {
@@ -237,6 +249,30 @@ impl KeyExchange {
                 }),
                 _ => return Err("Expected AuthInit message"),
             };
+
+        // COLLISION DETECTION:
+        // If we are already in InitiatorWaitingForResponse state, it means we also sent AuthInit.
+        // We must break the tie deterministically using ephemeral public keys.
+        if self.state == KeyExchangeState::InitiatorWaitingForResponse {
+            if let Some(our_pk) = &self.ephemeral_public {
+                let our_pk_bytes = our_pk.to_bytes();
+                let peer_pk_bytes_res = hex::decode(peer_eph_pk_hex);
+                
+                if let Ok(peer_pk_bytes) = peer_pk_bytes_res {
+                    if our_pk_bytes.as_slice() > peer_pk_bytes.as_slice() {
+                        // We win the tie-breaker. Ignore their AuthInit.
+                        // They will receive our AuthInit and yield (since their PK < ours).
+                        return Err("Collision detected: We are Initiator (winner) - ignoring peer AuthInit");
+                    } else {
+                        // We lose the tie-breaker. Yield to peer.
+                        // Reset state to Init to allow transition to Responder
+                        self.state = KeyExchangeState::Init;
+                    }
+                }
+            }
+        }
+
+        self.role = Some(KeyExchangeRole::Responder);
 
         // Parse peer's ephemeral public key
         let peer_eph_pk_bytes =

@@ -12,7 +12,7 @@ use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use rand::random;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
@@ -61,6 +61,18 @@ pub struct WasifVernam {
     has_swarm_entropy: bool,
     /// True Vernam buffer (if Some, uses TRUE random bytes instead of HKDF)
     true_vernam_buffer: Option<Arc<Mutex<crate::true_vernam::TrueVernamBuffer>>>,
+}
+
+impl std::fmt::Debug for WasifVernam {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WasifVernam")
+            .field("nonce_counter", &self.nonce_counter)
+            .field("swarm_seed", &self.swarm_seed)
+            .field("key_offset", &self.key_offset)
+            .field("has_swarm_entropy", &self.has_swarm_entropy)
+            .field("true_vernam_buffer", &self.true_vernam_buffer)
+            .finish()
+    }
 }
 
 impl WasifVernam {
@@ -565,6 +577,8 @@ pub struct P2PRelay {
     pub peer_id: String,
     /// Key Exchange state
     pub key_exchange: Arc<Mutex<KeyExchange>>,
+    /// Key exchange completion flag (set to true after both parties have completed exchange)
+    pub key_exchange_complete: Arc<AtomicBool>,
 }
 
 #[allow(dead_code)]
@@ -572,7 +586,7 @@ impl P2PRelay {
     /// Connect to relay and establish P2P session with key exchange
     pub async fn connect(
         relay_url: &str,
-        vernam_url: &str,
+        _vernam_url: &str,
         room_id: &str,
         role: PeerRole,
         proxy: Option<String>,
@@ -745,6 +759,7 @@ impl P2PRelay {
             shared_secret: [0u8; 32], // Initial empty secret, will be updated
             peer_id: my_peer_id.clone(),
             key_exchange: key_exchange.clone(),
+            key_exchange_complete: Arc::new(AtomicBool::new(false)),
         };
         let relay_arc = Arc::new(relay);
 
@@ -771,6 +786,11 @@ impl P2PRelay {
             });
         }
 
+        // DISABLED: Background entropy tasks were spawning on EVERY P2PRelay::connect call,
+        // causing request storms when the swarm reconnect loop runs repeatedly.
+        // The cipher still works with initial entropy from key exchange.
+        // TODO: If True Vernam mode is needed, use a global singleton to ensure only ONE fetcher.
+        /*
         // Start Continuous Entropy Refresher (Background Task)
         {
             let refresher = crate::p2p_relay::ContinuousEntropyRefresher::new(
@@ -805,6 +825,7 @@ impl P2PRelay {
                 "🔐 TRUE VERNAM MODE ENABLED BY DEFAULT - Mathematically unbreakable encryption!"
             );
         }
+        */
 
         info!("✅ Connected to relay with ID: {}", my_peer_id);
         Ok(relay_arc)
@@ -853,6 +874,23 @@ impl P2PRelay {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut writer = self.writer.lock().await;
         writer.send(Message::Text(text)).await?;
+        Ok(())
+    }
+
+    /// Wait for key exchange to complete before routing traffic
+    /// This prevents decryption failures that occur when routes are added before keys are ready
+    pub async fn wait_for_key_exchange(&self, timeout_secs: u64) -> Result<(), &'static str> {
+        let start = std::time::Instant::now();
+        let timeout = std::time::Duration::from_secs(timeout_secs);
+
+        while !self.key_exchange_complete.load(Ordering::SeqCst) {
+            if start.elapsed() > timeout {
+                return Err("Key exchange timeout - routes not added");
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+
+        info!("🔐 Key exchange complete - safe to add routes");
         Ok(())
     }
 
@@ -917,26 +955,39 @@ impl P2PRelay {
                         match ke_msg {
                             KeyExchangeMessage::AuthInit { .. } => {
                                 // Respond with AuthResponse
-                                let (auth_response, shared_secret) = {
+                                let result = {
                                     let mut ke = self.key_exchange.lock().await;
-                                    let resp = ke
-                                        .process_auth_init_and_respond(&ke_msg)
-                                        .map_err(|e| format!("Failed to handle AuthInit: {}", e))?;
-                                    let secret = ke
-                                        .get_shared_secret_bytes()
-                                        .ok_or("Failed to get shared secret")?;
-                                    (resp, secret)
+                                    ke.process_auth_init_and_respond(&ke_msg)
                                 };
 
-                                self.send_text(auth_response.to_json()).await?;
-                                debug!("Sent AuthResponse");
+                                match result {
+                                    Ok(auth_response) => {
+                                        let shared_secret = {
+                                            let ke = self.key_exchange.lock().await;
+                                            ke.get_shared_secret_bytes()
+                                                .ok_or("Failed to get shared secret")?
+                                        };
 
-                                // Update keys
-                                {
-                                    let mut k = self.keys.lock().await;
-                                    *k = WasifVernam::new(shared_secret, Vec::new());
+                                        self.send_text(auth_response.to_json()).await?;
+                                        debug!("Sent AuthResponse");
+
+                                        // Update keys
+                                        {
+                                            let mut k = self.keys.lock().await;
+                                            *k = WasifVernam::new(shared_secret, Vec::new());
+                                        }
+                                        info!("✅ Key exchange successful (Responder)!");
+                                        // Mark key exchange as complete
+                                        self.key_exchange_complete.store(true, Ordering::SeqCst);
+                                    }
+                                    Err(e) if e.contains("Collision detected") => {
+                                        warn!("⚠️ Key Exchange Collision: {}", e);
+                                        // Do nothing, we are the winner and will wait for AuthResponse
+                                    }
+                                    Err(e) => {
+                                        warn!("Failed to handle AuthInit: {}", e);
+                                    }
                                 }
-                                info!("✅ Key exchange successful (Responder)!");
                             }
                             KeyExchangeMessage::AuthResponse { .. } => {
                                 // Finalize handshake
@@ -958,6 +1009,8 @@ impl P2PRelay {
                                     *k = WasifVernam::new(shared_secret, Vec::new());
                                 }
                                 info!("✅ Key exchange successful (Initiator)!");
+                                // Mark key exchange as complete
+                                self.key_exchange_complete.store(true, Ordering::SeqCst);
 
                                 // Send KeyConfirm
                                 self.send_text(key_confirm.to_json()).await?;
@@ -970,6 +1023,8 @@ impl P2PRelay {
                                     warn!("Failed to process KeyConfirm: {}", e);
                                 } else {
                                     info!("✅ Key exchange finalized (Responder received KeyConfirm)!");
+                                    // Mark key exchange as complete (final confirmation)
+                                    self.key_exchange_complete.store(true, Ordering::SeqCst);
                                 }
                             }
                             _ => {}
