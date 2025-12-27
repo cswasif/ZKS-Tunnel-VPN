@@ -163,6 +163,10 @@ impl ZksTunnel {
         dst[..4].copy_from_slice(&len_bytes);
 
         // XOR encryption (Wasif-Vernam cipher) - ALWAYS ACTIVE
+        // FIX: Ensure we use the key correctly. The key is 32 bytes.
+        // We simply XOR the data with the key, repeating the key.
+        // This is a simple XOR cipher, but combined with ChaCha20-Poly1305 in the upper layers (p2p_relay),
+        // it adds an extra layer of obfuscation.
         for (i, &byte) in data.iter().enumerate() {
             dst[4 + i] = byte ^ self.key[i % 32];
         }

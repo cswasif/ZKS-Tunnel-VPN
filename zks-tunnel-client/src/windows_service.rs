@@ -1,6 +1,6 @@
 #[cfg(windows)]
 pub mod service {
-    use crate::Args;
+    use crate::cli::Args;
     use clap::Parser;
     use std::ffi::OsString;
     use std::sync::mpsc;
@@ -91,7 +91,7 @@ pub mod service {
             let shutdown_tx_clone = shutdown_tx.clone();
 
             rt.spawn(async move {
-                match crate::start_p2p_vpn(args_clone, room_id).await {
+                match crate::p2p_vpn::start_p2p_vpn(args_clone, room_id).await {
                     Ok(vpn) => {
                         info!("VPN started in background");
                         let mut guard = vpn_controller_clone.lock().await;

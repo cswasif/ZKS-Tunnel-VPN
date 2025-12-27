@@ -24,6 +24,7 @@ const TARGET_BUFFER_SIZE: usize = 1024 * 1024; // 1MB
 const FETCH_CHUNK_SIZE: usize = 1024 * 32; // 32KB per request
 
 /// True Vernam Buffer: Stores TRUE random bytes for one-time use
+#[derive(Debug)]
 pub struct TrueVernamBuffer {
     /// Ring buffer of TRUE random bytes (never reused)
     buffer: VecDeque<u8>,
