@@ -18,6 +18,9 @@ use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, trace};
 
+/// First octet of VPN subnet (10.x.x.x = class A private)
+const VPN_SUBNET_FIRST_OCTET: u8 = 10;
+
 /// NAT entry for UDP connection tracking
 #[derive(Debug)]
 struct UdpNatEntry {
@@ -56,7 +59,7 @@ impl ExitForwarder {
             // Exit traffic = destination is NOT our local VPN IP
             // and NOT in our VPN subnet (10.x.x.x)
             let is_local = dst == self.local_vpn_ip;
-            let is_vpn_subnet = dst.octets()[0] == 10;
+            let is_vpn_subnet = dst.octets()[0] == VPN_SUBNET_FIRST_OCTET;
             
             !is_local && !is_vpn_subnet
         } else {
@@ -81,7 +84,7 @@ impl ExitForwarder {
         }
         
         // Check if destination is in VPN subnet (peer-to-peer, not exit)
-        if dst_ip.octets()[0] == 10 {
+        if dst_ip.octets()[0] == VPN_SUBNET_FIRST_OCTET {
             return Ok(false); // VPN subnet traffic
         }
         

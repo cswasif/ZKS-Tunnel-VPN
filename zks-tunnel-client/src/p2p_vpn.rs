@@ -27,11 +27,11 @@ mod implementation {
     use std::collections::HashMap;
     use std::net::{Ipv4Addr, SocketAddr};
     use std::process::Command;
-    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::sync::{mpsc, Mutex, RwLock};
-    use tracing::{debug, error, info, warn};
+    use tracing::{debug, error, info, trace, warn};
 
     use crate::dns_guard::DnsGuard;
     use crate::entropy_tax::EntropyTax;
@@ -226,7 +226,7 @@ mod implementation {
                 http_client: Client::builder()
                     .use_rustls_tls()
                     .build()
-                    .unwrap_or_default(),
+                    .expect("Failed to create HTTP client - TLS initialization error"),
                 next_stream_id: Arc::new(AtomicU32::new(1)),
                 streams: Arc::new(RwLock::new(HashMap::new())),
                 dns_pending: Arc::new(RwLock::new(HashMap::new())),
@@ -253,7 +253,9 @@ mod implementation {
         pub async fn inject_packet(&self, packet: Vec<u8>) {
             let tx_guard = self.inject_tx.read().await;
             if let Some(tx) = tx_guard.as_ref() {
-                let _ = tx.send(packet).await;
+                if let Err(e) = tx.send(packet).await {
+                    warn!("inject_packet channel closed: {}", e);
+                }
             }
         }
 
@@ -297,6 +299,14 @@ mod implementation {
                     info!("📡 Connecting to ZKS Relay...");
                     match self.reconnect_with_backoff().await {
                         Ok(r) => {
+                            // CRITICAL FIX: Wait for key exchange before proceeding
+                            if let Err(e) = r.wait_for_handshake().await {
+                                error!("❌ Handshake failed: {}", e);
+                                let mut state = self.state.lock().await;
+                                *state = P2PVpnState::Disconnected;
+                                return Err(e);
+                            }
+                            
                             let mut relay_guard = self.relay.write().await;
                             *relay_guard = Some(r.clone());
                             r
@@ -738,8 +748,8 @@ mod implementation {
             &self,
             role: PeerRole,
         ) -> Result<Arc<P2PRelay>, Box<dyn std::error::Error + Send + Sync>> {
-            println!(
-                "🔥 DEBUG: Inside connect_to_relay, calling P2PRelay::connect for role {:?}...",
+            trace!(
+                "Connecting to relay for role {:?}...",
                 role
             );
             let relay = P2PRelay::connect(
@@ -751,10 +761,10 @@ mod implementation {
             )
             .await;
 
-            println!("🔥 DEBUG: Inside connect_to_relay, P2PRelay::connect returned (Result) for role {:?}!", role);
+            trace!("P2PRelay::connect returned for role {:?}", role);
             let relay = relay?;
-            println!(
-                "🔥 DEBUG: Inside connect_to_relay, unwrapped relay for role {:?}!",
+            trace!(
+                "Relay connection established for role {:?}",
                 role
             );
 
@@ -1262,39 +1272,44 @@ mod implementation {
                 let _ = std::process::Command::new("sysctl")
                     .args(["-w", "net.ipv4.ip_forward=1"])
                     .output();
-                // Enable Masquerade for VPN subnet
-                let _ = std::process::Command::new("iptables")
-                    .args([
-                        "-t",
-                        "nat",
-                        "-A",
-                        "POSTROUTING",
-                        "-s",
-                        "10.0.85.0/24",
-                        "-j",
-                        "MASQUERADE",
-                    ])
-                    .output();
-                info!("✅ NAT Masquerade enabled for 10.0.85.0/24 (Exit role)");
                 
-                // Also enable MASQUERADE for all outbound traffic (for TCP/ICMP exit)
                 // Detect the default WAN interface dynamically
                 let wan_interface = linux_routing::get_default_interface()
                     .unwrap_or_else(|| "eth0".to_string()); // Fallback to eth0
                 
+                // Enable MASQUERADE for VPN traffic exiting to internet
+                // Use 10.0.0.0/8 to cover all VPN client IPs (10.x.x.x range)
+                // CRITICAL: Must specify both source subnet AND output interface
                 let _ = std::process::Command::new("iptables")
                     .args([
-                        "-t",
-                        "nat",
-                        "-A",
-                        "POSTROUTING",
-                        "-o",
-                        &wan_interface,
-                        "-j",
-                        "MASQUERADE",
+                        "-t", "nat",
+                        "-C", "POSTROUTING", // Check if rule exists
+                        "-s", "10.0.0.0/8",
+                        "-o", &wan_interface,
+                        "-j", "MASQUERADE",
                     ])
-                    .output();
-                info!("✅ NAT Masquerade enabled for {} interface (Exit role)", wan_interface);
+                    .output()
+                    .and_then(|o| {
+                        if o.status.success() {
+                            info!("✅ NAT Masquerade already configured for 10.0.0.0/8 -> {}", wan_interface);
+                            Ok(())
+                        } else {
+                            // Rule doesn't exist, add it
+                            let add = std::process::Command::new("iptables")
+                                .args([
+                                    "-t", "nat",
+                                    "-A", "POSTROUTING",
+                                    "-s", "10.0.0.0/8",
+                                    "-o", &wan_interface,
+                                    "-j", "MASQUERADE",
+                                ])
+                                .output()?;
+                            if add.status.success() {
+                                info!("✅ NAT Masquerade enabled for 10.0.0.0/8 -> {} (TCP/ICMP ready)", wan_interface);
+                            }
+                            Ok(())
+                        }
+                    });
             }
 
             // Store device name before into_queues() consumes it

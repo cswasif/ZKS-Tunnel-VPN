@@ -13,74 +13,31 @@
 //!
 //! Then configure your browser/system to use SOCKS5 proxy at localhost:1080
 
-use clap::{Parser, ValueEnum};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tracing::{error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 
-mod chain;
-mod ct_ops; // Constant-time cryptographic operations
-mod entry_node;
-mod exit_node_udp;
-mod exit_peer;
-mod file_transfer;
-mod http_proxy;
-mod hybrid_data;
-mod key_exchange;
-mod p2p_client;
-mod p2p_relay;
-mod p2p_vpn;
-mod packet_pool;
-mod socks5;
-mod stream_manager;
-mod tunnel;
-mod vpn;
-mod zks_tunnel;
+use clap::Parser;
+use zks_tunnel_client::cli::{Args, Mode};
+use zks_tunnel_client::utils::{BoxError, check_privileges};
+use zks_tunnel_client::p2p_vpn::start_p2p_vpn;
 
-#[cfg(target_os = "linux")]
-mod tun_multiqueue;
-#[cfg(feature = "vpn")]
-mod userspace_nat;
+use zks_tunnel_client::{
+    entry_node, exit_node_udp, exit_peer, file_transfer, http_proxy,
+    hybrid_data, p2p_client, p2p_relay, socks5,
+    tunnel,
+};
 
-// Platform-specific routing modules
-#[cfg(all(target_os = "linux", feature = "vpn"))]
-mod linux_routing;
-#[cfg(all(target_os = "windows", feature = "vpn"))]
-mod windows_routing;
+#[cfg(feature = "vpn")]
+use zks_tunnel_client::vpn;
 
-// DNS leak protection
-#[cfg(feature = "vpn")]
-mod dns_guard;
-#[cfg(feature = "vpn")]
-mod kill_switch;
 
 #[cfg(windows)]
-mod windows_service;
+use zks_tunnel_client::windows_service;
 
 #[cfg(feature = "swarm")]
-mod p2p_swarm;
-
-#[cfg(feature = "swarm")]
-mod onion;
-
-mod entropy_events;
-mod entropy_tax;
-mod exit_service;
-mod key_rotation;
-mod relay_service;
-mod replay_protection;
-pub mod swarm_entropy_collection;
-mod tls_mimicry;
-mod traffic_mixer;
-mod traffic_shaping;
-pub mod true_vernam;
-
-#[cfg(feature = "swarm")]
-mod signaling;
-
-#[cfg(feature = "swarm")]
-mod swarm_controller;
+use zks_tunnel_client::{p2p_swarm, swarm, onion, signaling, swarm_controller};
 
 use http_proxy::HttpProxyServer;
 use socks5::Socks5Server;
@@ -90,177 +47,6 @@ use tunnel::TunnelClient;
 use std::sync::Arc;
 #[cfg(feature = "vpn")]
 use vpn::{VpnConfig, VpnController};
-
-/// Operating mode for the VPN client
-#[derive(Debug, Clone, Copy, ValueEnum, Default, PartialEq)]
-pub enum Mode {
-    /// SOCKS5 proxy mode (browser only, raw TCP)
-    #[default]
-    Socks5,
-    /// HTTP proxy mode (uses fetch() for HTTPS, works with all sites)
-    Http,
-    /// System-wide VPN mode (all traffic, via Cloudflare Worker)
-    Vpn,
-    /// P2P Client mode - route traffic through Exit Peer (SOCKS5 interface)
-    #[value(name = "p2p-client")]
-    P2pClient,
-    /// P2P VPN mode - system-wide VPN through Exit Peer (Triple-Blind)
-    #[value(name = "p2p-vpn")]
-    P2pVpn,
-    /// Exit Peer mode - forward traffic to Internet (HTTP/TCP proxy)
-    #[value(name = "exit-peer")]
-    ExitPeer,
-    /// Exit Peer VPN mode - Layer 3 VPN packet forwarding (TUN device)
-    #[value(name = "exit-peer-vpn")]
-    ExitPeerVpn,
-    /// Entry Node mode - UDP relay for Multi-Hop VPN (first hop)
-    #[value(name = "entry-node")]
-    EntryNode,
-    /// Exit Node UDP mode - TUN forwarding for Multi-Hop VPN (second hop)
-    #[value(name = "exit-node-udp")]
-    ExitNodeUdp,
-    /// Exit Peer Hybrid mode - Worker signaling + Cloudflare Tunnel data
-    #[value(name = "exit-peer-hybrid")]
-    ExitPeerHybrid,
-    /// Faisal Swarm mode - P2P mesh with DCUtR hole-punching and bandwidth sharing
-    #[cfg(feature = "swarm")]
-    #[value(name = "swarm")]
-    Swarm,
-    /// Send file to peer
-    #[value(name = "send-file")]
-    SendFile,
-    /// Receive file from peer
-    #[value(name = "receive-file")]
-    ReceiveFile,
-}
-
-/// ZKS-Tunnel VPN Client
-#[derive(Parser, Debug, Clone)]
-#[command(name = "zks-vpn")]
-#[command(author = "Md Wasif Faisal")]
-#[command(version = "0.1.0")]
-#[command(about = "Serverless VPN via Cloudflare Workers", long_about = None)]
-pub struct Args {
-    /// ZKS-Tunnel Worker WebSocket URL
-    #[arg(short, long, default_value = "wss://zks-tunnel-relay.md-wasif-faisal.workers.dev")]
-    worker: String,
-
-    /// Operating mode: socks5 (browser only) or vpn (system-wide)
-    #[arg(short, long, value_enum, default_value_t = Mode::Socks5)]
-    mode: Mode,
-
-    /// Local SOCKS5 proxy port (socks5 mode only)
-    #[arg(short, long, default_value_t = 1080)]
-    port: u16,
-
-    /// Bind address (socks5 mode only)
-    #[arg(short, long, default_value = "127.0.0.1")]
-    bind: String,
-
-    /// TUN device name (vpn mode only)
-    #[arg(long, default_value = "zks0")]
-    tun_name: String,
-
-    /// VPN IP address (auto-generated if not provided)
-    #[arg(long)]
-    vpn_address: Option<String>,
-
-    /// Exit Peer VPN IP address (gateway for routing)
-    #[arg(long, default_value = "10.0.85.2")]
-    exit_peer_address: String,
-
-    /// Enable kill switch - block traffic if VPN disconnects (vpn mode only)
-    #[arg(long)]
-    kill_switch: bool,
-
-    /// Enable DNS leak protection (vpn mode only)
-    #[arg(long)]
-    dns_protection: bool,
-
-    /// Room ID for P2P mode (shared between Client and Exit Peer)
-    #[arg(long)]
-    room: Option<String>,
-
-    /// Relay URL for P2P mode (defaults to zks-tunnel-relay worker)
-    #[arg(
-        long,
-        default_value = "wss://zks-tunnel-relay.md-wasif-faisal.workers.dev"
-    )]
-    relay: String,
-
-    /// ZKS-Vernam key server URL (for double-key encryption)
-    #[arg(long, default_value = "https://zks-key.md-wasif-faisal.workers.dev")]
-    vernam: String,
-
-    /// Constant Rate Padding in Kbps (traffic analysis defense)
-    /// Set to 0 to disable. Example: --padding 100 for 100 Kbps padding
-    #[arg(long, default_value_t = 0)]
-    padding: u32,
-
-    /// Enable verbose logging
-    #[arg(short, long)]
-    verbose: bool,
-
-    /// Swarm: Consent to run as exit node (legal requirement)
-    #[arg(long)]
-    exit_consent: bool,
-
-    /// Swarm: Disable relay service (default: enabled)
-    #[arg(long)]
-    no_relay: bool,
-
-    /// Swarm: Disable exit service (default: disabled, requires --exit-consent)
-    #[arg(long)]
-    /// Swarm: Disable exit service (default: disabled, requires --exit-consent)
-    #[arg(long)]
-    no_exit: bool,
-
-    /// Swarm: Disable VPN client (default: enabled)
-    #[arg(long)]
-    no_client: bool,
-
-    /// Swarm: Run in Server Mode (Exit Node with NAT, no default route change)
-    #[arg(long)]
-    server: bool,
-
-    /// Upstream SOCKS5 proxy (e.g., 127.0.0.1:9050) to route traffic through
-    #[arg(long)]
-    proxy: Option<String>,
-
-    /// Exit Node address for Entry Node mode (e.g., 213.35.103.204:51820)
-    #[arg(long, default_value = "213.35.103.204:51820")]
-    exit_node: String,
-
-    /// Listen port for Entry Node mode (UDP)
-    #[arg(long, default_value_t = 51820)]
-    listen_port: u16,
-
-    /// File path for transfer (send-file/receive-file mode)
-    #[arg(long)]
-    file: Option<String>,
-
-    /// Destination peer ID (send-file mode)
-    #[arg(long)]
-    dest: Option<String>,
-
-    /// Transfer ticket (receive-file mode)
-    #[arg(long)]
-    ticket: Option<String>,
-
-    /// Run as a Windows Service
-    #[arg(long)]
-    service: bool,
-
-    /// Install as a Windows Service
-    #[arg(long)]
-    install_service: bool,
-
-    /// Uninstall the Windows Service
-    #[arg(long)]
-    uninstall_service: bool,
-}
-
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
@@ -633,66 +419,6 @@ async fn run_vpn_mode(_args: Args, _tunnel: TunnelClient) -> Result<(), BoxError
     }
 }
 
-/// Start P2P VPN controller
-#[cfg(feature = "vpn")]
-pub async fn start_p2p_vpn(
-    args: Args,
-    room_id: String,
-) -> Result<p2p_vpn::P2PVpnController, BoxError> {
-    use crate::entropy_tax::EntropyTax;
-    use p2p_vpn::{P2PVpnConfig, P2PVpnController};
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
-
-    // Check for admin/root privileges
-    check_privileges()?;
-
-    let vpn_addr: std::net::Ipv4Addr = args
-        .vpn_address
-        .clone()
-        .unwrap_or("10.0.85.1".to_string())
-        .parse()?;
-
-    let config = P2PVpnConfig {
-        device_name: args.tun_name.clone(),
-        address: vpn_addr,
-        netmask: std::net::Ipv4Addr::new(255, 255, 255, 0),
-        mtu: 1500,
-        dns_protection: args.dns_protection,
-        kill_switch: args.kill_switch,
-        relay_url: args.relay.clone(),
-        vernam_url: args.vernam.clone(),
-        room_id,
-        proxy: args.proxy.clone(),
-
-        exit_peer_address: args.exit_peer_address.parse()?,
-        server_mode: args.server,
-        role: if args.server {
-            crate::p2p_relay::PeerRole::ExitPeer
-        } else {
-            crate::p2p_relay::PeerRole::Client
-        },
-    };
-
-    info!("🔒 Starting P2P VPN (Triple-Blind Architecture)...");
-    info!("   All traffic will be routed through the Exit Peer.");
-    info!("   Your IP is hidden behind the Exit Peer's IP.");
-
-    if args.kill_switch {
-        info!("   Kill switch: ENABLED (traffic blocked if VPN drops)");
-    }
-
-    if args.dns_protection {
-        info!("   DNS protection: ENABLED (queries via DoH)");
-    }
-
-    let entropy_tax = Arc::new(Mutex::new(EntropyTax::new()));
-    let vpn = P2PVpnController::new(config, entropy_tax);
-    vpn.start().await?;
-
-    Ok(vpn)
-}
-
 /// Run in P2P VPN mode (Triple-Blind Architecture)
 async fn run_p2p_vpn_mode(args: Args, room_id: String) -> Result<(), BoxError> {
     #[cfg(not(feature = "vpn"))]
@@ -720,28 +446,7 @@ async fn run_p2p_vpn_mode(args: Args, room_id: String) -> Result<(), BoxError> {
     }
 }
 
-/// Check if running with admin/root privileges
-#[cfg(feature = "vpn")]
-fn check_privileges() -> Result<(), BoxError> {
-    #[cfg(target_os = "windows")]
-    {
-        // On Windows, check if running as Administrator
-        // This is a simplified check - full implementation would use Windows API
-        tracing::warn!("⚠️  VPN mode requires Administrator privileges on Windows");
-        tracing::warn!("   Right-click zks-vpn.exe → Run as administrator");
-    }
 
-    #[cfg(unix)]
-    {
-        if unsafe { libc::geteuid() } != 0 {
-            error!("❌ VPN mode requires root privileges!");
-            error!("   Run with: sudo zks-vpn --mode vpn ...");
-            return Err("Root privileges required for VPN mode".into());
-        }
-    }
-
-    Ok(())
-}
 
 /// Run as Exit Peer in Hybrid mode (Worker signaling + Cloudflare Tunnel data)
 ///
@@ -904,7 +609,7 @@ async fn run_swarm_mode(args: Args, room_id: String) -> Result<(), BoxError> {
         vernam_url: args.vernam.clone(),
         exit_consent_given: args.exit_consent,
         vpn_address,
-        server_mode: args.server,
+        server_mode: args.server, // Role-based routing handled by p2p_vpn.rs
     };
 
     info!("🔧 Configuration:");

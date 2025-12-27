@@ -100,8 +100,8 @@ impl std::fmt::Debug for KeyExchange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KeyExchange")
             .field("role", &self.role)
-            .field("ephemeral_public", &self.ephemeral_public)
-            .field("peer_ephemeral_public", &self.peer_ephemeral_public)
+            .field("has_ephemeral_key", &self.ephemeral_public.is_some())
+            .field("has_peer_key", &self.peer_ephemeral_public.is_some())
             .field("state", &self.state)
             .field("room_id", &self.room_id)
             .finish()
@@ -121,8 +121,8 @@ impl KeyExchange {
 
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+            .expect("System clock is before UNIX epoch - time sync required")
+            .as_secs();
 
         Self {
             role: None,
@@ -456,6 +456,15 @@ impl KeyExchange {
         let mut pk_array = [0u8; 32];
         pk_array.copy_from_slice(&peer_eph_pk_bytes);
         let peer_eph_pk = PublicKey::from(pk_array);
+
+        // SELF-ECHO DETECTION: Ignore if peer's ephemeral_pk equals our own
+        // This happens when the relay echoes our own AuthInit back to us
+        // and we respond to ourselves, then receive our own AuthResponse
+        if let Some(our_pk) = &self.ephemeral_public {
+            if our_pk.to_bytes() == pk_array {
+                return Err("Ignored: AuthResponse self-echo (peer ephemeral_pk equals our own)");
+            }
+        }
 
         // Store peer's ephemeral public key
         self.peer_ephemeral_public = Some(peer_eph_pk);

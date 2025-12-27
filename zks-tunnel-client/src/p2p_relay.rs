@@ -67,10 +67,10 @@ impl std::fmt::Debug for WasifVernam {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WasifVernam")
             .field("nonce_counter", &self.nonce_counter)
-            .field("swarm_seed", &self.swarm_seed)
+            .field("swarm_seed", &"[REDACTED]") // Security: don't log key material
             .field("key_offset", &self.key_offset)
             .field("has_swarm_entropy", &self.has_swarm_entropy)
-            .field("true_vernam_buffer", &self.true_vernam_buffer)
+            .field("true_vernam_buffer", &self.true_vernam_buffer.is_some())
             .finish()
     }
 }
@@ -154,7 +154,8 @@ impl WasifVernam {
         let mut nonce_bytes = [0u8; 12];
         let counter = self.nonce_counter.fetch_add(1, Ordering::SeqCst);
         nonce_bytes[4..].copy_from_slice(&counter.to_be_bytes());
-        getrandom::getrandom(&mut nonce_bytes[0..4]).unwrap_or_default();
+        getrandom::getrandom(&mut nonce_bytes[0..4])
+            .expect("CRITICAL: Failed to generate random nonce - RNG unavailable");
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         // 1. True Vernam Layer: XOR with infinite keystream (if swarm entropy available)
@@ -199,7 +200,10 @@ impl WasifVernam {
 
         // Extract nonce and offset
         let nonce = Nonce::from_slice(&data[0..12]);
-        let key_offset = u64::from_be_bytes(data[12..20].try_into().unwrap());
+        let key_offset = u64::from_be_bytes(
+            data[12..20].try_into()
+                .map_err(|_| chacha20poly1305::aead::Error)?
+        );
         let ciphertext = &data[20..];
 
         // 1. Base Layer: Decrypt with ChaCha20-Poly1305
@@ -711,7 +715,8 @@ impl P2PRelay {
 
         // Step 0: Wait for Welcome message to get our Peer ID
         let reader_clone = reader.clone();
-        let welcome_timeout = timeout(Duration::from_secs(10), async {
+        // INCREASED TIMEOUT: 10s -> 60s to handle high latency or worker cold starts
+        let welcome_timeout = timeout(Duration::from_secs(60), async {
             let mut reader_guard = reader_clone.lock().await;
             while let Some(msg) = reader_guard.next().await {
                 match msg? {
@@ -734,7 +739,7 @@ impl P2PRelay {
                     _ => {}
                 }
             }
-            Err("No welcome message".into())
+            Err("No welcome message received within timeout".into())
         })
         .await;
 
@@ -829,6 +834,30 @@ impl P2PRelay {
 
         info!("✅ Connected to relay with ID: {}", my_peer_id);
         Ok(relay_arc)
+    }
+
+    /// Wait for the key exchange to complete
+    pub async fn wait_for_handshake(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use tokio::time::{timeout, Duration};
+        
+        info!("⏳ Waiting for key exchange to complete...");
+        
+        // Wait up to 30 seconds for handshake
+        let result = timeout(Duration::from_secs(30), async {
+            while !self.key_exchange_complete.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }).await;
+
+        match result {
+            Ok(_) => {
+                info!("✅ Key exchange completed successfully");
+                Ok(())
+            }
+            Err(_) => {
+                Err("Key exchange timed out".into())
+            }
+        }
     }
 
     /// Send ZKS-encrypted message through relay

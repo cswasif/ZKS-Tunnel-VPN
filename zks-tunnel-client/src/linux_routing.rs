@@ -129,3 +129,49 @@ pub fn get_default_interface() -> Option<String> {
     
     None
 }
+
+/// Enable NAT MASQUERADE for VPN traffic exiting to the internet
+/// This is required for Exit node functionality - forwards VPN client traffic to the internet
+#[cfg(target_os = "linux")]
+pub fn enable_nat_masquerade(vpn_subnet: &str, wan_interface: &str) -> Result<()> {
+    use std::process::Command;
+    
+    // First, enable IP forwarding
+    match Command::new("sysctl")
+        .args(["-w", "net.ipv4.ip_forward=1"])
+        .output() {
+        Ok(output) if output.status.success() => {
+            info!("✅ IP forwarding enabled");
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::warn!("⚠️ Failed to enable IP forwarding: {}", stderr);
+        }
+        Err(e) => {
+            tracing::warn!("⚠️ Could not run sysctl: {}", e);
+        }
+    }
+    
+    // Check if rule already exists to avoid duplicates
+    let check = Command::new("iptables")
+        .args(["-t", "nat", "-C", "POSTROUTING", "-s", vpn_subnet, "-o", wan_interface, "-j", "MASQUERADE"])
+        .output();
+    
+    if check.map(|o| o.status.success()).unwrap_or(false) {
+        info!("✅ NAT MASQUERADE already configured for {} -> {}", vpn_subnet, wan_interface);
+        return Ok(());
+    }
+    
+    // Add MASQUERADE rule: traffic from VPN subnet going out WAN interface gets NAT'd
+    let output = Command::new("iptables")
+        .args(["-t", "nat", "-A", "POSTROUTING", "-s", vpn_subnet, "-o", wan_interface, "-j", "MASQUERADE"])
+        .output()?;
+    
+    if output.status.success() {
+        info!("✅ NAT MASQUERADE enabled: {} -> {} (TCP/ICMP forwarding ready)", vpn_subnet, wan_interface);
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("Failed to add iptables MASQUERADE: {}", stderr).into())
+    }
+}
