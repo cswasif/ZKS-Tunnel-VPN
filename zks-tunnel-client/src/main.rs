@@ -20,24 +20,22 @@ use tracing_subscriber::FmtSubscriber;
 
 use clap::Parser;
 use zks_tunnel_client::cli::{Args, Mode};
-use zks_tunnel_client::utils::{BoxError, check_privileges};
 use zks_tunnel_client::p2p_vpn::start_p2p_vpn;
+use zks_tunnel_client::utils::{check_privileges, BoxError};
 
 use zks_tunnel_client::{
-    entry_node, exit_node_udp, exit_peer, file_transfer, http_proxy,
-    hybrid_data, p2p_client, p2p_relay, socks5,
-    tunnel,
+    entry_node, exit_node_udp, exit_peer, file_transfer, http_proxy, hybrid_data, p2p_client,
+    p2p_relay, socks5, tunnel,
 };
 
 #[cfg(feature = "vpn")]
 use zks_tunnel_client::vpn;
 
-
 #[cfg(windows)]
 use zks_tunnel_client::windows_service;
 
 #[cfg(feature = "swarm")]
-use zks_tunnel_client::{p2p_swarm, swarm, onion, signaling, swarm_controller};
+use zks_tunnel_client::swarm_controller;
 
 use http_proxy::HttpProxyServer;
 use socks5::Socks5Server;
@@ -445,8 +443,6 @@ async fn run_p2p_vpn_mode(args: Args, room_id: String) -> Result<(), BoxError> {
         Ok(())
     }
 }
-
-
 
 /// Run as Exit Peer in Hybrid mode (Worker signaling + Cloudflare Tunnel data)
 ///
